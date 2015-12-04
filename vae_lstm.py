@@ -1,26 +1,18 @@
-# modified sequence 2 sequence framework
+"""
+this is a modified sequence 2 sequence framework for variational LSTMs.
 
-"""Example / benchmark for building a PTB LSTM model.
-
-Trains the model described in:
-(Zaremba, et. al.) Recurrent Neural Network Regularization
-http://arxiv.org/abs/1409.2329
-
-The data required for this example is in the data/ dir of the
-PTB dataset from Tomas Mikolov's webpage:
-
+runs this PTB dataset from Tomas Mikolov's webpage:
 http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz
 
-There are 3 supported model configurations:
-===========================================
-| config | epochs | train | valid  | test
-===========================================
-| small  | 13     | 37.99 | 121.39 | 115.91
-| medium | 39     | 48.45 |  86.16 |  82.07
-| large  | 55     | 37.87 |  82.62 |  78.29
-The exact results may vary depending on the random initialization.
+e.g. to train the 'small' run:
+python vae_lstm.py \
+  --data_path=/home/altosaar/projects/arxiv/dat/simple-examples/data \
+  --model small \
 
-The hyperparameters used in the model:
+on either GPU or CPU.
+
+hyperparameters used in the model:
+- z_dim - latent dimensionality
 - init_scale - the initial scale of the weights
 - learning_rate - the initial value of the learning rate
 - max_grad_norm - the maximum permissible norm of the gradient
@@ -33,6 +25,7 @@ The hyperparameters used in the model:
 - lr_decay - the decay of the learning rate for each epoch after "max_epoch"
 - batch_size - the batch size
 
+OLD:
 To compile on CPU:
   bazel build -c opt tensorflow/models/rnn/ptb:ptb_word_lm
 To compile on GPU:
@@ -133,7 +126,7 @@ def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
 
 def vae_decoder(decoder_inputs, z_samples, initial_state, cell, loop_function=None,
                   scope=None, config=None):
-  """RNN decoder for the VAE sequence-to-sequence model.
+  """modified RNN decoder for the VAE sequence-to-sequence model.
 
   Args:
     decoder_inputs: a list of 2D Tensors [batch_size x cell.input_size].
