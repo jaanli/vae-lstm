@@ -63,6 +63,9 @@ from tensorflow.models.rnn import rnn
 
 import reader
 
+# set seed
+tf.set_random_seed(98765)
+
 flags = tf.flags
 logging = tf.logging
 
@@ -70,8 +73,10 @@ flags.DEFINE_string(
     "model", "small",
     "A type of model. Possible options are: small, medium, large.")
 flags.DEFINE_string("data_path", None, "data_path")
-flags.DEFINE_string("load_checkpoint", None, 'checkpoint file to load')
+flags.DEFINE_string("checkpoint_dir", None, 'checkpoint dir to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
+flags.DEFINE_boolean('decode', False, 'debugging mode or not')
+
 
 FLAGS = flags.FLAGS
 
@@ -452,7 +457,7 @@ def get_config():
     raise ValueError("Invalid model: %s", FLAGS.model)
 
 
-def main(unused_args):
+def train(unused_args):
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
 
@@ -467,7 +472,7 @@ def main(unused_args):
 
   config = get_config()
   eval_config = get_config()
-  # eval_config.batch_size = 1
+  eval_config.batch_size = 1
   eval_config.num_steps = 1
 
   with tf.Graph().as_default(), tf.Session() as session:
@@ -479,19 +484,29 @@ def main(unused_args):
       mvalid = PTBModel(is_training=False, config=config)
       mtest = PTBModel(is_training=False, config=eval_config)
 
-    tf.initialize_all_variables().run()
-
     # create saver to checkpoint
     saver = tf.train.Saver()
+    if FLAGS.checkpoint_dir:
+      ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+      if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
+        # Restores from checkpoint
+        saver.restore(session, ckpt.model_checkpoint_path)
+        print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+    else:
+      tf.initialize_all_variables().run()
+      print('no checkpoint file found; initialized vars')
 
     for i in range(config.max_max_epoch):
       lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
       m.assign_lr(session, config.learning_rate * lr_decay)
 
       print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+      # if not FLAGS.checkpoint_dir:
       train_perplexity = run_epoch(session, m, train_data, m.train_op,
-                                   verbose=True)
-      save_path = saver.save(session, "/model.ckpt")
+                                     verbose=True)
+      # else:
+        # train_perplexity = 0
+      save_path = saver.save(session, "./model.ckpt")
       print("Model saved in file: %s" % save_path)
       print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
       valid_perplexity = run_epoch(session, mvalid, valid_data, tf.no_op())
@@ -500,6 +515,56 @@ def main(unused_args):
     test_perplexity = run_epoch(session, mtest, test_data, tf.no_op())
     print("Test Perplexity: %.3f" % test_perplexity)
 
+def decode():
+  # from tensorflow.models.rnn.translate.translate.py
+  # get the vocab
+  raw_data = reader.ptb_raw_data(FLAGS.data_path)
+  train_data, valid_data, test_data, word_to_id = raw_data
+  with tf.Session() as sess:
+    # Create model and load parameters.
+    config = get_config()
+    m = PTBModel(is_training=False, config=config)
+
+    # Load vocabularies.
+    en_vocab_path = os.path.join(FLAGS.data_dir,
+                                 "vocab%d.en" % FLAGS.en_vocab_size)
+    fr_vocab_path = os.path.join(FLAGS.data_dir,
+                                 "vocab%d.fr" % FLAGS.fr_vocab_size)
+    en_vocab, _ = data_utils.initialize_vocabulary(en_vocab_path)
+    _, rev_fr_vocab = data_utils.initialize_vocabulary(fr_vocab_path)
+
+    # Decode from standard input.
+    sys.stdout.write("> ")
+    sys.stdout.flush()
+    sentence = sys.stdin.readline()
+    while sentence:
+      # Get token-ids for the input sentence.
+      token_ids = data_utils.sentence_to_token_ids(sentence, en_vocab)
+      # Which bucket does it belong to?
+      bucket_id = min([b for b in xrange(len(_buckets))
+                       if _buckets[b][0] > len(token_ids)])
+      # Get a 1-element batch to feed the sentence to the model.
+      encoder_inputs, decoder_inputs, target_weights = model.get_batch(
+          {bucket_id: [(token_ids, [])]}, bucket_id)
+      # Get output logits for the sentence.
+      _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
+                                       target_weights, bucket_id, True)
+      # This is a greedy decoder - outputs are just argmaxes of output_logits.
+      outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
+      # If there is an EOS symbol in outputs, cut them at that point.
+      if data_utils.EOS_ID in outputs:
+        outputs = outputs[:outputs.index(data_utils.EOS_ID)]
+      # Print out French sentence corresponding to outputs.
+      print(" ".join([rev_fr_vocab[output] for output in outputs]))
+      print("> ", end="")
+      sys.stdout.flush()
+      sentence = sys.stdin.readline()
+
+def main(unused_args):
+  if FLAGS.decode:
+    decode()
+  else:
+    train(unused_args)
 
 if __name__ == "__main__":
-  tf.app.run()
+    tf.app.run()
