@@ -689,62 +689,28 @@ def decode():
       return
 
     # Decode from standard input.
-    sys.stdout.write("> ")
-    sys.stdout.flush()
-    for n_sample in range(0, 1):
-      print('sample ', n_sample)
-      start_word_id = np.random.choice(range(0, int(vocabulary) + 1))
-      print('first word is ', id_to_word[start_word_id])
-      sentence_ids = []
-      sentence_length = config.num_steps
+    sentence_length = config.num_steps
 
-      state = m.initial_state.eval()
-      for sentence in range(20):
-        x = np.floor(np.random.rand(1,sentence_length)).astype(np.int32)
-        cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
-                                     {m.input_data: x,
-                                      m.targets: x,
-                                      m.initial_state: state})
-        print(cost)
+    state = m.initial_state.eval()
+    for sentence in range(20):
+      sys.stdout.write("> ")
+      sys.stdout.flush()
+      print('sample ', sentence)
+      # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
+      x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
+      # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
+      #                              {m.input_data: x,
+      #                               m.targets: x,
+      #                               m.initial_state: state})
+      # print(cost)
+      logits = session.run([m.logits],{m.input_data: x,
+                                        m.targets: x,
+                                        m.initial_state: state})
 
-      for step, (x, y) in enumerate(reader.ptb_iterator(train_data, m.batch_size,
-                                                        m.num_steps)):
-        print(type(x)) # numpy.ndarray
-        print(type(x[0,0]))
-        print(x.shape)
-        cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
-                                     {m.input_data: x,
-                                      m.targets: y,
-                                      m.initial_state: state})
-        # print(cost)
-
-      # for step in range(0, sentence_length):
-      #   print(step)
-      #   state, logits = session.run([m.final_state, m.logits],
-      #                                    {m.input_data: start_word_id,
-      #                                     m.targets: start_word_id,
-      #                                     m.initial_state: state})
-        # cost, state, _ = session.run([m.cost, m.final_state, eval_op],
-        #                              {m.input_data: x,
-        #                               m.targets: y,
-        #                               m.initial_state: state})
-
-
-
-      # # Get a 1-element batch to feed the sentence to the model.
-      # encoder_inputs, decoder_inputs, target_weights = model.get_batch(
-      #     {bucket_id: [(token_ids, [])]}, bucket_id)
-      # Get output logits for the sentence.
-      _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
-                                       target_weights, bucket_id, True)
-      # This is a greedy decoder - outputs are just argmaxes of output_logits.
-      outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-      # # If there is an EOS symbol in outputs, cut them at that point.
-      # if data_utils.EOS_ID in outputs:
-      #   outputs = outputs[:outputs.index(data_utils.EOS_ID)]
-      # Print out French sentence corresponding to outputs.
-      print(" ".join([rev_fr_vocab[output] for output in outputs]))
-      print("> ", end="")
+      word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
+      sentence = [id_to_word[word_id] for word_id in word_ids]
+      sentence_str = ' '.join(sentence)
+      print(sentence_str)
       sys.stdout.flush()
 
 def main(unused_args):
