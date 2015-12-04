@@ -48,7 +48,7 @@ from __future__ import print_function
 
 import time
 
-import sys
+import sys, os
 sys.path.append("/Users/jaanaltosaar/projects/installations/tensorflow")
 
 import tensorflow.python.platform
@@ -60,6 +60,8 @@ from tensorflow.models.rnn import rnn_cell
 from tensorflow.models.rnn import seq2seq
 #from tensorflow.models.rnn.ptb import reader
 from tensorflow.models.rnn import rnn
+from tensorflow.python.platform import gfile
+
 
 import reader
 
@@ -75,13 +77,13 @@ flags.DEFINE_string(
 flags.DEFINE_string("data_path", None, "data_path")
 flags.DEFINE_string("checkpoint_dir", None, 'checkpoint dir to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
-flags.DEFINE_boolean('decode', False, 'debugging mode or not')
+flags.DEFINE_boolean('decode', False, 'decoding mode or not')
 
 
 FLAGS = flags.FLAGS
 
 def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
-                scope=None):
+                scope=None, config=None):
   """RNN decoder for the sequence-to-sequence model.
 
   Args:
@@ -113,6 +115,9 @@ def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
     prev = None
     for i in xrange(len(decoder_inputs)):
       inp = decoder_inputs[i]
+      # print(prev_z_sample)
+      # print(cell.input_size)
+      # prev_z_sample = tf.slice(inp, cell.input_size - config.z_dim, [1, config.z_dim])
       if loop_function is not None and prev is not None:
         with tf.variable_scope("loop_function", reuse=True):
           # We do not propagate gradients over the loop function.
@@ -125,6 +130,45 @@ def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
       if loop_function is not None:
         prev = tf.stop_gradient(output)
   return outputs, states
+
+def rnn_decoder_argmax(decoder_inputs, initial_state, cell, num_symbols, output_projection=None, feed_previous=False, scope=None, config=None):
+  if output_projection is not None:
+    proj_weights = tf.convert_to_tensor(output_projection[0], dtype=tf.float32)
+    proj_weights.get_shape().assert_is_compatible_with([cell.output_size,
+                                                        num_symbols])
+    proj_biases = tf.convert_to_tensor(output_projection[1], dtype=tf.float32)
+    proj_biases.get_shape().assert_is_compatible_with([num_symbols])
+
+  with tf.variable_scope(scope or "rnn_decoder_argmax"):
+
+    with tf.device("/cpu:0"):
+      embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
+
+    def extract_argmax_and_embed(prev, _):
+      """Loop_function that extracts the symbol from prev and embeds it."""
+      # print(prev)
+      if output_projection is not None:
+        prev_z_sample = tf.slice(prev, [1, cell.input_size], [1, config.z_dim])
+        print(prev_z_sample)
+        # tf.Print(prev)
+        # z_sample = tf.slice(prev, cell.input_size - config.z_dim, [])
+        prev = tf.nn.xw_plus_b(prev, output_projection[0], output_projection[1])
+        # prev = tf.concat(1, [prev, tf.zeros(z_sample])
+      prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+      prev_embedding = tf.nn.embedding_lookup(embedding, prev_symbol)
+      # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, tf.zeros([1, config.z_dim])])
+      # print(tf.zeros([1, config.z_dim]).get_shape())
+      # print(prev_z_sample.get_shape())
+      prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, prev_z_sample])
+      # print(prev_embedding_and_z_sample)
+      return prev_embedding_and_z_sample
+
+    loop_function = None
+    if feed_previous:
+      loop_function = extract_argmax_and_embed
+
+    return rnn_decoder(decoder_inputs, initial_state, cell,
+                       loop_function=loop_function, scope=scope, config=config)
 
 def embedding_rnn_decoder(decoder_inputs, initial_state, cell, num_symbols,
                           output_projection=None, feed_previous=False,
@@ -168,7 +212,8 @@ def embedding_rnn_decoder(decoder_inputs, initial_state, cell, num_symbols,
 
   with tf.variable_scope(scope or "embedding_rnn_decoder"):
     with tf.device("/cpu:0"):
-      embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
+      with tf.variable_scope("embedding"):
+        embedding = tf.get_variable("embedding", [num_symbols, cell.input_size], reuse=True)
 
     def extract_argmax_and_embed(prev, _):
       """Loop_function that extracts the symbol from prev and embeds it."""
@@ -198,7 +243,7 @@ def pprint(tensor, message='', shape=False):
 class PTBModel(object):
   """The PTB model."""
 
-  def __init__(self, is_training, config):
+  def __init__(self, is_training, config, decode_only=False):
     self.batch_size = batch_size = config.batch_size
     self.num_steps = num_steps = config.num_steps
     size = config.hidden_size
@@ -210,41 +255,37 @@ class PTBModel(object):
     # Slightly better results can be obtained with forget gate biases
     # initialized to 1 but the hyperparameters of the model would need to be
     # different than reported in the paper.
-    lstm_encoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
-    if is_training and config.keep_prob < 1:
-      lstm_encoder_cell = rnn_cell.DropoutWrapper(
-          lstm_encoder_cell, output_keep_prob=config.keep_prob)
-    cell_encoder = rnn_cell.MultiRNNCell([lstm_encoder_cell] * config.num_layers)
+    with tf.variable_scope("cell_encoder"):
+      lstm_encoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
+      if is_training and config.keep_prob < 1:
+        lstm_encoder_cell = rnn_cell.DropoutWrapper(
+            lstm_encoder_cell, output_keep_prob=config.keep_prob)
+      cell_encoder = rnn_cell.MultiRNNCell([lstm_encoder_cell] * config.num_layers)
 
-    # this is the linear projection layer down to num_encoder_symbols
-    cell_encoder = rnn_cell.OutputProjectionWrapper(cell_encoder, config.num_encoder_symbols)
+      # this is the linear projection layer down to num_encoder_symbols
+      cell_encoder = rnn_cell.OutputProjectionWrapper(cell_encoder, config.num_encoder_symbols)
 
-    lstm_decoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
-    if is_training and config.keep_prob < 1:
-      lstm_decoder_cell = rnn_cell.DropoutWrapper(
-          lstm_decoder_cell, output_keep_prob=config.keep_prob)
-    cell_decoder = rnn_cell.MultiRNNCell([lstm_decoder_cell] * config.num_layers)
+      self._initial_state_encoder = cell_encoder.zero_state(batch_size, tf.float32)
 
-    self._initial_state_encoder = cell_encoder.zero_state(batch_size, tf.float32)
 
-    self._initial_state_decoder = cell_decoder.zero_state(batch_size, tf.float32)
+    with tf.variable_scope("cell_decoder"):
+      lstm_decoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
+      if is_training and config.keep_prob < 1:
+        lstm_decoder_cell = rnn_cell.DropoutWrapper(
+            lstm_decoder_cell, output_keep_prob=config.keep_prob)
+      cell_decoder = rnn_cell.MultiRNNCell([lstm_decoder_cell] * config.num_layers)
+
+      self._initial_state_decoder = cell_decoder.zero_state(batch_size, tf.float32)
 
     with tf.device("/cpu:0"):
-      embedding = tf.get_variable("embedding", [vocab_size, size])
+      with tf.variable_scope("embedding"):
+        embedding = tf.get_variable("embedding", [vocab_size, size])
       inputs = tf.split(
           1, num_steps, tf.nn.embedding_lookup(embedding, self._input_data))
       inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
 
     if is_training and config.keep_prob < 1:
       inputs = [tf.nn.dropout(input_, config.keep_prob) for input_ in inputs]
-
-    # Simplified version of tensorflow.models.rnn.rnn.py's rnn().
-    # This builds an unrolled LSTM for tutorial purposes only.
-    # In general, use the rnn() or state_saving_rnn() from rnn.py.
-    #
-    # The alternative version of the code below is:
-    #
-
 
     #inputs[0] = tf.Print(inputs[0], [inputs[0].get_shape(), inputs[0]])
     # inputs[0] = pprint(inputs[0], shape=True, message='inputs')
@@ -269,7 +310,9 @@ class PTBModel(object):
 
     # do the location-scale transform
     z_samples = [tf.add(mu, tf.mul(tf.exp(log_sigma), epsilon)) for mu, log_sigma, epsilon in zip(mus, log_sigmas, epsilons)]
-
+    if decode_only:
+      # if we're decoding, just sample from a random normal
+      z_samples = [tf.random_normal([1, config.z_dim]) for i in range(len(z_samples))]
     # z_samples[0] = pprint(z_samples[0], message='z_sample')
 
     # calculate KL. equation 10 from kingma - auto-encoding variational bayes.
@@ -288,7 +331,15 @@ class PTBModel(object):
 
     # decoder_inputs[0] = pprint(decoder_inputs[0], message='decoder_input')
 
-    outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
+    # no pure decoding opt
+    # outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
+    # with pure decoding opt
+    softmax_w = tf.get_variable("softmax_w", [size, vocab_size])
+    softmax_b = tf.get_variable("softmax_b", [vocab_size])
+    outputs_decoder, states_decoder = rnn_decoder_argmax(decoder_inputs, self._initial_state_decoder, cell_decoder, vocab_size,
+      output_projection=[softmax_w, softmax_b],
+      feed_previous=True,
+      config=config)
 
     # outputs_decoder[0] = pprint(outputs_decoder[0], message='outputs from decoder')
     # final output
@@ -310,8 +361,8 @@ class PTBModel(object):
     # do a softmax over the vocabulary using the decoder outputs!
     output = tf.reshape(tf.concat(1, outputs), [-1, size])
     logits = tf.nn.xw_plus_b(output,
-                             tf.get_variable("softmax_w", [size, vocab_size]),
-                             tf.get_variable("softmax_b", [vocab_size]))
+                             softmax_w,
+                             softmax_b)
     loss = seq2seq.sequence_loss_by_example([logits],
                                             [tf.reshape(self._targets, [-1])],
                                             [tf.ones([batch_size * num_steps])],
@@ -324,6 +375,9 @@ class PTBModel(object):
     # cost = pprint(cost, message='ELBO')
     self._cost = cost
     self._final_state = states_encoder[-1]
+    if decode_only:
+      self._logits = logits
+      return
 
     if not is_training:
       return
@@ -360,6 +414,10 @@ class PTBModel(object):
     return self._final_state
 
   @property
+  def logits(self):
+    return self._logits
+
+  @property
   def lr(self):
     return self._lr
 
@@ -375,14 +433,14 @@ class SmallConfig(object):
   max_grad_norm = 5 #grad clippin
   num_layers = 1
   num_steps = 20
-  hidden_size = 100# 2 for debugging
+  hidden_size = 2#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
   batch_size = 1#20
   vocab_size = 10000
-  z_dim = 50# 1 for debugging
+  z_dim = 20# 1 for debugging
   num_encoder_symbols = 2 * z_dim # we split encoder output in two to get mu, log_sigma
 
 
@@ -516,55 +574,96 @@ def train(unused_args):
     print("Test Perplexity: %.3f" % test_perplexity)
 
 def decode():
+  # given a trained model's checkpoint file, this function generates sample sentences
+
   # from tensorflow.models.rnn.translate.translate.py
   # get the vocab
   raw_data = reader.ptb_raw_data(FLAGS.data_path)
   train_data, valid_data, test_data, word_to_id = raw_data
-  with tf.Session() as sess:
-    # Create model and load parameters.
-    config = get_config()
-    m = PTBModel(is_training=False, config=config)
+  id_to_word = {v:k for k, v in word_to_id.items()}
+  vocabulary = len(word_to_id)
 
-    # Load vocabularies.
-    en_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.en" % FLAGS.en_vocab_size)
-    fr_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.fr" % FLAGS.fr_vocab_size)
-    en_vocab, _ = data_utils.initialize_vocabulary(en_vocab_path)
-    _, rev_fr_vocab = data_utils.initialize_vocabulary(fr_vocab_path)
+  config = get_config()
+  with tf.Graph().as_default(), tf.Session() as session:
+    initializer = tf.random_uniform_initializer(-config.init_scale,
+                                                config.init_scale)
+    with tf.variable_scope("model", reuse=None, initializer=initializer):
+      m = PTBModel(is_training=False, config=config, decode_only=True)
+      m.batch_size = 1
+      m.num_steps = 20
+    # with tf.variable_scope("model", reuse=True, initializer=initializer):
+    #   mvalid = PTBModel(is_training=False, config=config)
+    #   mtest = PTBModel(is_training=False, config=eval_config)
+
+    # create saver to checkpoint
+    saver = tf.train.Saver()
+    if FLAGS.checkpoint_dir:
+      ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+      if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
+        # Restores from checkpoint
+        saver.restore(session, ckpt.model_checkpoint_path)
+        print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+    else:
+      print('no checkpoint file found; need this to decode')
+      return
 
     # Decode from standard input.
     sys.stdout.write("> ")
     sys.stdout.flush()
-    sentence = sys.stdin.readline()
-    while sentence:
-      # Get token-ids for the input sentence.
-      token_ids = data_utils.sentence_to_token_ids(sentence, en_vocab)
-      # Which bucket does it belong to?
-      bucket_id = min([b for b in xrange(len(_buckets))
-                       if _buckets[b][0] > len(token_ids)])
-      # Get a 1-element batch to feed the sentence to the model.
-      encoder_inputs, decoder_inputs, target_weights = model.get_batch(
-          {bucket_id: [(token_ids, [])]}, bucket_id)
+    for n_sample in range(0, 1):
+      print('sample ', n_sample)
+      start_word_id = np.random.choice(range(0, int(vocabulary) + 1))
+      print('first word is ', id_to_word[start_word_id])
+      sentence_length = np.random.choice(range(5,25))
+      sentence_ids = []
+
+      state = m.initial_state.eval()
+
+      for step, (x, y) in enumerate(reader.ptb_iterator(train_data, m.batch_size,
+                                                        m.num_steps)):
+        print(step)
+        print(x)
+        print(y)
+        cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
+                                     {m.input_data: x,
+                                      m.targets: y,
+                                      m.initial_state: state})
+        print(cost)
+
+      # for step in range(0, sentence_length):
+      #   print(step)
+      #   state, logits = session.run([m.final_state, m.logits],
+      #                                    {m.input_data: start_word_id,
+      #                                     m.targets: start_word_id,
+      #                                     m.initial_state: state})
+        # cost, state, _ = session.run([m.cost, m.final_state, eval_op],
+        #                              {m.input_data: x,
+        #                               m.targets: y,
+        #                               m.initial_state: state})
+
+
+
+      # # Get a 1-element batch to feed the sentence to the model.
+      # encoder_inputs, decoder_inputs, target_weights = model.get_batch(
+      #     {bucket_id: [(token_ids, [])]}, bucket_id)
       # Get output logits for the sentence.
       _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
                                        target_weights, bucket_id, True)
       # This is a greedy decoder - outputs are just argmaxes of output_logits.
       outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-      # If there is an EOS symbol in outputs, cut them at that point.
-      if data_utils.EOS_ID in outputs:
-        outputs = outputs[:outputs.index(data_utils.EOS_ID)]
+      # # If there is an EOS symbol in outputs, cut them at that point.
+      # if data_utils.EOS_ID in outputs:
+      #   outputs = outputs[:outputs.index(data_utils.EOS_ID)]
       # Print out French sentence corresponding to outputs.
       print(" ".join([rev_fr_vocab[output] for output in outputs]))
       print("> ", end="")
       sys.stdout.flush()
-      sentence = sys.stdin.readline()
 
 def main(unused_args):
-  if FLAGS.decode:
-    decode()
-  else:
-    train(unused_args)
+  # if FLAGS.decode:
+  #   decode()
+  # else:
+  train(unused_args)
 
 if __name__ == "__main__":
     tf.app.run()
