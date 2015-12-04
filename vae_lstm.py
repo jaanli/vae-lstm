@@ -517,15 +517,15 @@ class SmallConfig(object):
   learning_rate = 1.0
   max_grad_norm = 5 #grad clippin
   num_layers = 1
-  num_steps = 10#20
+  num_steps = 20#20
   hidden_size = 2#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
-  batch_size = 3
+  batch_size = 10
   vocab_size = 10000
-  z_dim = 3# 1 for debugging
+  z_dim = 50# 1 for debugging
   num_encoder_symbols = 2 * z_dim # we split encoder output in two to get mu, log_sigma
 
 
@@ -580,8 +580,8 @@ def run_epoch(session, m, data, eval_op, verbose=False):
     # print('^targets')
     costs += cost
     iters += m.num_steps
-    # if verbose and step % (epoch_size // 10) == 10:
-    if verbose and step % 10 == 0:
+    if verbose and step % (epoch_size // 10) == 10:
+    # if verbose and step % 10 == 0:
       print("%.3f ELBO: %.3f perplexity: %.3f speed: %.0f wps" %
             (step * 1.0 / epoch_size, costs / iters, np.exp(costs / iters),
              iters * m.batch_size / (time.time() - start_time)))
