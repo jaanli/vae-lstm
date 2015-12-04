@@ -48,7 +48,7 @@ from __future__ import print_function
 
 import time
 
-import sys
+import sys, os
 sys.path.append("/Users/jaanaltosaar/projects/installations/tensorflow")
 
 import tensorflow.python.platform
@@ -60,8 +60,13 @@ from tensorflow.models.rnn import rnn_cell
 from tensorflow.models.rnn import seq2seq
 #from tensorflow.models.rnn.ptb import reader
 from tensorflow.models.rnn import rnn
+from tensorflow.python.platform import gfile
+
 
 import reader
+
+# set seed
+tf.set_random_seed(98765)
 
 flags = tf.flags
 logging = tf.logging
@@ -70,13 +75,15 @@ flags.DEFINE_string(
     "model", "small",
     "A type of model. Possible options are: small, medium, large.")
 flags.DEFINE_string("data_path", None, "data_path")
-flags.DEFINE_string("load_checkpoint", None, 'checkpoint file to load')
+flags.DEFINE_string("checkpoint_dir", None, 'checkpoint dir to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
+flags.DEFINE_boolean('decode', False, 'decoding mode or not')
+
 
 FLAGS = flags.FLAGS
 
 def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
-                scope=None):
+                scope=None, config=None):
   """RNN decoder for the sequence-to-sequence model.
 
   Args:
@@ -108,10 +115,13 @@ def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
     prev = None
     for i in xrange(len(decoder_inputs)):
       inp = decoder_inputs[i]
+      # inp = tf.Print(inp, [inp.get_shape()])
+      # prev_z_sample = tf.slice(inp, [config.batch_size, cell.input_size], [config.batch_size, -1])
       if loop_function is not None and prev is not None:
         with tf.variable_scope("loop_function", reuse=True):
           # We do not propagate gradients over the loop function.
           inp = tf.stop_gradient(loop_function(prev, i))
+          # inp = tf.concat(1, [inp, tf.zeros(prev_z_sample])
       if i > 0:
         tf.get_variable_scope().reuse_variables()
       output, new_state = cell(inp, states[-1])
@@ -120,6 +130,119 @@ def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
       if loop_function is not None:
         prev = tf.stop_gradient(output)
   return outputs, states
+
+def vae_decoder(decoder_inputs, z_samples, initial_state, cell, loop_function=None,
+                  scope=None, config=None):
+  """RNN decoder for the VAE sequence-to-sequence model.
+
+  Args:
+    decoder_inputs: a list of 2D Tensors [batch_size x cell.input_size].
+    z_samples: [batch_size x config.z_dim]
+    initial_state: 2D Tensor with shape [batch_size x cell.state_size].
+    cell: rnn_cell.RNNCell defining the cell function and size.
+    loop_function: if not None, this function will be applied to i-th output
+      in order to generate i+1-th input, and decoder_inputs will be ignored,
+      except for the first element ("GO" symbol). This can be used for decoding,
+      but also for training to emulate http://arxiv.org/pdf/1506.03099v2.pdf.
+      Signature -- loop_function(prev, i) = next
+        * prev is a 2D Tensor of shape [batch_size x cell.output_size],
+        * i is an integer, the step number (when advanced control is needed),
+        * next is a 2D Tensor of shape [batch_size x cell.input_size].
+    scope: VariableScope for the created subgraph; defaults to "rnn_decoder".
+
+  Returns:
+    outputs: A list of the same length as decoder_inputs of 2D Tensors with
+      shape [batch_size x cell.output_size] containing generated outputs.
+    states: The state of each cell in each time-step. This is a list with
+      length len(decoder_inputs) -- one item for each time-step.
+      Each item is a 2D Tensor of shape [batch_size x cell.state_size].
+      (Note that in some cases, like basic RNN cell or GRU cell, outputs and
+       states can be the same. They are different for LSTM cells though.)
+  """
+  with tf.variable_scope(scope or "rnn_decoder"):
+    states = [initial_state]
+    outputs = []
+    prev = None
+    for i in xrange(len(decoder_inputs)):
+      inp = decoder_inputs[i]
+      inp_z_sample = z_samples[i]
+      inp = tf.concat(1, [inp, inp_z_sample])
+      if loop_function is not None and prev is not None:
+        with tf.variable_scope("loop_function", reuse=True):
+          # We do not propagate gradients over the loop function.
+          inp = tf.stop_gradient(loop_function(prev, inp_z_sample))
+      if i > 0:
+        tf.get_variable_scope().reuse_variables()
+      output, new_state = cell(inp, states[-1])
+      outputs.append(output)
+      states.append(new_state)
+      if loop_function is not None:
+        prev = tf.stop_gradient(output)
+  return outputs, states
+
+def rnn_decoder_argmax(decoder_inputs, initial_state, cell, num_symbols, output_projection=None, feed_previous=False, scope=None, config=None):
+  if output_projection is not None:
+    proj_weights = tf.convert_to_tensor(output_projection[0], dtype=tf.float32)
+    proj_weights.get_shape().assert_is_compatible_with([cell.output_size,
+                                                        num_symbols])
+    proj_biases = tf.convert_to_tensor(output_projection[1], dtype=tf.float32)
+    proj_biases.get_shape().assert_is_compatible_with([num_symbols])
+
+  with tf.variable_scope(scope or "rnn_decoder_argmax"):
+
+    with tf.device("/cpu:0"):
+      embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
+
+    def extract_argmax_and_embed(prev, i):
+      """Loop_function that extracts the symbol from prev and embeds it."""
+      print(i)
+      if output_projection is not None:
+        # prev_z_sample = tf.slice(prev, [config.batch_size, cell.input_size], [config.batch_size, config.z_dim])
+        prev = tf.nn.xw_plus_b(prev, output_projection[0], output_projection[1])
+      prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+      prev_embedding = tf.nn.embedding_lookup(embedding, prev_symbol)
+      # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, tf.zeros([1, config.z_dim])])
+      # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, prev_z_sample])
+      return prev_embedding
+
+    loop_function = None
+    if feed_previous:
+      loop_function = extract_argmax_and_embed
+
+    return rnn_decoder(decoder_inputs, initial_state, cell,
+                       loop_function=loop_function, scope=scope, config=config)
+
+def vae_decoder_argmax(decoder_inputs, z_samples, initial_state, cell, num_symbols, output_projection=None, feed_previous=False, scope=None, config=None):
+  ### DECODER FOR VAE WITH SEPARATE Z_SAMPLES
+  if output_projection is not None:
+    proj_weights = tf.convert_to_tensor(output_projection[0], dtype=tf.float32)
+    proj_weights.get_shape().assert_is_compatible_with([cell.output_size,
+                                                        num_symbols])
+    proj_biases = tf.convert_to_tensor(output_projection[1], dtype=tf.float32)
+    proj_biases.get_shape().assert_is_compatible_with([num_symbols])
+
+  with tf.variable_scope(scope or "vae_decoder_argmax"):
+    with tf.variable_scope("embedding"):
+      with tf.device("/cpu:0"):
+        embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
+
+    def extract_argmax_and_embed(prev, prev_z_sample):
+      """Loop_function that extracts the symbol from prev and embeds it."""
+      if output_projection is not None:
+        # prev_z_sample = tf.slice(prev, [config.batch_size, cell.input_size], [config.batch_size, config.z_dim])
+        prev = tf.nn.xw_plus_b(prev, output_projection[0], output_projection[1])
+      prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+      prev_embedding = tf.nn.embedding_lookup(embedding, prev_symbol)
+      # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, tf.zeros([1, config.z_dim])])
+      prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, prev_z_sample])
+      return prev_embedding_and_z_sample
+
+    loop_function = None
+    if feed_previous:
+      loop_function = extract_argmax_and_embed
+
+    return vae_decoder(decoder_inputs, z_samples, initial_state, cell,
+                       loop_function=loop_function, scope=scope, config=config)
 
 def embedding_rnn_decoder(decoder_inputs, initial_state, cell, num_symbols,
                           output_projection=None, feed_previous=False,
@@ -163,7 +286,8 @@ def embedding_rnn_decoder(decoder_inputs, initial_state, cell, num_symbols,
 
   with tf.variable_scope(scope or "embedding_rnn_decoder"):
     with tf.device("/cpu:0"):
-      embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
+      with tf.variable_scope("embedding"):
+        embedding = tf.get_variable("embedding", [num_symbols, cell.input_size], reuse=True)
 
     def extract_argmax_and_embed(prev, _):
       """Loop_function that extracts the symbol from prev and embeds it."""
@@ -193,7 +317,7 @@ def pprint(tensor, message='', shape=False):
 class PTBModel(object):
   """The PTB model."""
 
-  def __init__(self, is_training, config):
+  def __init__(self, is_training, config, decode_only=False):
     self.batch_size = batch_size = config.batch_size
     self.num_steps = num_steps = config.num_steps
     size = config.hidden_size
@@ -205,41 +329,37 @@ class PTBModel(object):
     # Slightly better results can be obtained with forget gate biases
     # initialized to 1 but the hyperparameters of the model would need to be
     # different than reported in the paper.
-    lstm_encoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
-    if is_training and config.keep_prob < 1:
-      lstm_encoder_cell = rnn_cell.DropoutWrapper(
-          lstm_encoder_cell, output_keep_prob=config.keep_prob)
-    cell_encoder = rnn_cell.MultiRNNCell([lstm_encoder_cell] * config.num_layers)
+    with tf.variable_scope("cell_encoder"):
+      lstm_encoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
+      if is_training and config.keep_prob < 1:
+        lstm_encoder_cell = rnn_cell.DropoutWrapper(
+            lstm_encoder_cell, output_keep_prob=config.keep_prob)
+      cell_encoder = rnn_cell.MultiRNNCell([lstm_encoder_cell] * config.num_layers)
 
-    # this is the linear projection layer down to num_encoder_symbols
-    cell_encoder = rnn_cell.OutputProjectionWrapper(cell_encoder, config.num_encoder_symbols)
+      # this is the linear projection layer down to num_encoder_symbols
+      cell_encoder = rnn_cell.OutputProjectionWrapper(cell_encoder, config.num_encoder_symbols)
 
-    lstm_decoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
-    if is_training and config.keep_prob < 1:
-      lstm_decoder_cell = rnn_cell.DropoutWrapper(
-          lstm_decoder_cell, output_keep_prob=config.keep_prob)
-    cell_decoder = rnn_cell.MultiRNNCell([lstm_decoder_cell] * config.num_layers)
+      self._initial_state_encoder = cell_encoder.zero_state(batch_size, tf.float32)
 
-    self._initial_state_encoder = cell_encoder.zero_state(batch_size, tf.float32)
 
-    self._initial_state_decoder = cell_decoder.zero_state(batch_size, tf.float32)
+    with tf.variable_scope("cell_decoder"):
+      lstm_decoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
+      if is_training and config.keep_prob < 1:
+        lstm_decoder_cell = rnn_cell.DropoutWrapper(
+            lstm_decoder_cell, output_keep_prob=config.keep_prob)
+      cell_decoder = rnn_cell.MultiRNNCell([lstm_decoder_cell] * config.num_layers)
+
+      self._initial_state_decoder = cell_decoder.zero_state(batch_size, tf.float32)
 
     with tf.device("/cpu:0"):
-      embedding = tf.get_variable("embedding", [vocab_size, size])
+      with tf.variable_scope("embedding"):
+        embedding = tf.get_variable("embedding", [vocab_size, size])
       inputs = tf.split(
           1, num_steps, tf.nn.embedding_lookup(embedding, self._input_data))
       inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
 
     if is_training and config.keep_prob < 1:
       inputs = [tf.nn.dropout(input_, config.keep_prob) for input_ in inputs]
-
-    # Simplified version of tensorflow.models.rnn.rnn.py's rnn().
-    # This builds an unrolled LSTM for tutorial purposes only.
-    # In general, use the rnn() or state_saving_rnn() from rnn.py.
-    #
-    # The alternative version of the code below is:
-    #
-
 
     #inputs[0] = tf.Print(inputs[0], [inputs[0].get_shape(), inputs[0]])
     # inputs[0] = pprint(inputs[0], shape=True, message='inputs')
@@ -260,11 +380,13 @@ class PTBModel(object):
     log_sigmas = [mu_and_log_sigma[1] for mu_and_log_sigma in mu_and_log_sigmas]
 
     # epsilon is sampled from N(0,1) for location-scale transform
-    epsilons = [tf.random_normal([1, config.z_dim]) for i in range(len(log_sigmas))]
+    epsilons = [tf.random_normal([config.batch_size, config.z_dim]) for i in range(len(log_sigmas))]
 
     # do the location-scale transform
     z_samples = [tf.add(mu, tf.mul(tf.exp(log_sigma), epsilon)) for mu, log_sigma, epsilon in zip(mus, log_sigmas, epsilons)]
-
+    if decode_only:
+      # if we're decoding, just sample from a random normal
+      z_samples = [tf.random_normal([1, config.z_dim]) for i in range(len(z_samples))]
     # z_samples[0] = pprint(z_samples[0], message='z_sample')
 
     # calculate KL. equation 10 from kingma - auto-encoding variational bayes.
@@ -278,12 +400,31 @@ class PTBModel(object):
 
     # neg_KL = pprint(neg_KL, message='neg_KL')
 
-    # concatenate z_samples with previous timesteps
-    decoder_inputs = [tf.concat(1, [single_input, z_sample]) for single_input, z_sample in zip(inputs_encoder, z_samples)]
+    # print(decoder_inputs[0:10])#, [decoder_inputs[0]])
 
     # decoder_inputs[0] = pprint(decoder_inputs[0], message='decoder_input')
+    # decoder_inputs[0] = tf.Print(decoder_inputs[0], [decoder_inputs[0].get_shape()])
 
-    outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
+    # no pure decoding opt
+    # outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
+
+    softmax_w = tf.get_variable("softmax_w", [size, vocab_size])
+    softmax_b = tf.get_variable("softmax_b", [vocab_size])
+
+    # concatenate z_samples with previous timesteps
+    # decoder_inputs = [tf.concat(1, [single_input, z_sample]) for single_input, z_sample in zip(inputs_encoder, z_samples)]
+    # outputs_decoder, states_decoder = rnn_decoder_argmax(decoder_inputs, self._initial_state_decoder, cell_decoder, vocab_size,
+    #   output_projection=[softmax_w, softmax_b],
+    #   feed_previous=True,
+    #   config=config)
+
+    # refactored to be like sam's
+    # z_samples = [tf.reshape(z_sample, [1, config.z_dim]) for z_sample in z_samples]
+    outputs_decoder, states_decoder = vae_decoder_argmax(inputs_encoder, z_samples, self._initial_state_decoder, cell_decoder, vocab_size,
+      output_projection=[softmax_w, softmax_b],
+      feed_previous=True,
+      config=config)
+
 
     # outputs_decoder[0] = pprint(outputs_decoder[0], message='outputs from decoder')
     # final output
@@ -305,8 +446,8 @@ class PTBModel(object):
     # do a softmax over the vocabulary using the decoder outputs!
     output = tf.reshape(tf.concat(1, outputs), [-1, size])
     logits = tf.nn.xw_plus_b(output,
-                             tf.get_variable("softmax_w", [size, vocab_size]),
-                             tf.get_variable("softmax_b", [vocab_size]))
+                             softmax_w,
+                             softmax_b)
     loss = seq2seq.sequence_loss_by_example([logits],
                                             [tf.reshape(self._targets, [-1])],
                                             [tf.ones([batch_size * num_steps])],
@@ -319,6 +460,9 @@ class PTBModel(object):
     # cost = pprint(cost, message='ELBO')
     self._cost = cost
     self._final_state = states_encoder[-1]
+    if decode_only:
+      self._logits = logits
+      return
 
     if not is_training:
       return
@@ -355,6 +499,10 @@ class PTBModel(object):
     return self._final_state
 
   @property
+  def logits(self):
+    return self._logits
+
+  @property
   def lr(self):
     return self._lr
 
@@ -369,13 +517,13 @@ class SmallConfig(object):
   learning_rate = 1.0
   max_grad_norm = 5 #grad clippin
   num_layers = 1
-  num_steps = 20
-  hidden_size = 100# 2 for debugging
+  num_steps = 20#20
+  hidden_size = 2#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
-  batch_size = 1#20
+  batch_size = 10
   vocab_size = 10000
   z_dim = 50# 1 for debugging
   num_encoder_symbols = 2 * z_dim # we split encoder output in two to get mu, log_sigma
@@ -432,8 +580,8 @@ def run_epoch(session, m, data, eval_op, verbose=False):
     # print('^targets')
     costs += cost
     iters += m.num_steps
-
     if verbose and step % (epoch_size // 10) == 10:
+    # if verbose and step % 10 == 0:
       print("%.3f ELBO: %.3f perplexity: %.3f speed: %.0f wps" %
             (step * 1.0 / epoch_size, costs / iters, np.exp(costs / iters),
              iters * m.batch_size / (time.time() - start_time)))
@@ -452,7 +600,7 @@ def get_config():
     raise ValueError("Invalid model: %s", FLAGS.model)
 
 
-def main(unused_args):
+def train(unused_args):
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
 
@@ -467,7 +615,7 @@ def main(unused_args):
 
   config = get_config()
   eval_config = get_config()
-  # eval_config.batch_size = 1
+  eval_config.batch_size = 1
   eval_config.num_steps = 1
 
   with tf.Graph().as_default(), tf.Session() as session:
@@ -479,19 +627,29 @@ def main(unused_args):
       mvalid = PTBModel(is_training=False, config=config)
       mtest = PTBModel(is_training=False, config=eval_config)
 
-    tf.initialize_all_variables().run()
-
     # create saver to checkpoint
     saver = tf.train.Saver()
+    if FLAGS.checkpoint_dir:
+      ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+      if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
+        # Restores from checkpoint
+        saver.restore(session, ckpt.model_checkpoint_path)
+        print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+    else:
+      tf.initialize_all_variables().run()
+      print('no checkpoint file found; initialized vars')
 
     for i in range(config.max_max_epoch):
       lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
       m.assign_lr(session, config.learning_rate * lr_decay)
 
       print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+      # if not FLAGS.checkpoint_dir:
       train_perplexity = run_epoch(session, m, train_data, m.train_op,
-                                   verbose=True)
-      save_path = saver.save(session, "/model.ckpt")
+                                     verbose=True)
+      # else:
+        # train_perplexity = 0
+      save_path = saver.save(session, "./model.ckpt")
       print("Model saved in file: %s" % save_path)
       print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
       valid_perplexity = run_epoch(session, mvalid, valid_data, tf.no_op())
@@ -500,6 +658,66 @@ def main(unused_args):
     test_perplexity = run_epoch(session, mtest, test_data, tf.no_op())
     print("Test Perplexity: %.3f" % test_perplexity)
 
+def decode():
+  # given a trained model's checkpoint file, this function generates sample sentences
+
+  # from tensorflow.models.rnn.translate.translate.py
+  # get the vocab
+  raw_data = reader.ptb_raw_data(FLAGS.data_path)
+  train_data, valid_data, test_data, word_to_id = raw_data
+  id_to_word = {v:k for k, v in word_to_id.items()}
+  vocabulary = len(word_to_id)
+
+  config = get_config()
+  with tf.Graph().as_default(), tf.Session() as session:
+    initializer = tf.random_uniform_initializer(-config.init_scale,
+                                                config.init_scale)
+    with tf.variable_scope("model", reuse=None, initializer=initializer):
+      config.batch_size = 1
+      m = PTBModel(is_training=False, config=config, decode_only=True)
+
+    # create saver to checkpoint
+    saver = tf.train.Saver()
+    if FLAGS.checkpoint_dir:
+      ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
+      if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
+        # Restores from checkpoint
+        saver.restore(session, ckpt.model_checkpoint_path)
+        print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+    else:
+      print('no checkpoint file found; need this to decode')
+      return
+
+    # Decode from standard input.
+    sentence_length = config.num_steps
+
+    state = m.initial_state.eval()
+    for sentence in range(20):
+      sys.stdout.write("> ")
+      sys.stdout.flush()
+      print('sample ', sentence)
+      # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
+      x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
+      # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
+      #                              {m.input_data: x,
+      #                               m.targets: x,
+      #                               m.initial_state: state})
+      # print(cost)
+      logits = session.run([m.logits],{m.input_data: x,
+                                        m.targets: x,
+                                        m.initial_state: state})
+
+      word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
+      sentence = [id_to_word[word_id] for word_id in word_ids]
+      sentence_str = ' '.join(sentence)
+      print(sentence_str)
+      sys.stdout.flush()
+
+def main(unused_args):
+  if FLAGS.decode:
+    decode()
+  else:
+    train(unused_args)
 
 if __name__ == "__main__":
-  tf.app.run()
+    tf.app.run()
