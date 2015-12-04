@@ -115,13 +115,62 @@ def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
     prev = None
     for i in xrange(len(decoder_inputs)):
       inp = decoder_inputs[i]
-      # print(prev_z_sample)
-      # print(cell.input_size)
-      # prev_z_sample = tf.slice(inp, cell.input_size - config.z_dim, [1, config.z_dim])
+      # inp = tf.Print(inp, [inp.get_shape()])
+      # prev_z_sample = tf.slice(inp, [config.batch_size, cell.input_size], [config.batch_size, -1])
       if loop_function is not None and prev is not None:
         with tf.variable_scope("loop_function", reuse=True):
           # We do not propagate gradients over the loop function.
           inp = tf.stop_gradient(loop_function(prev, i))
+          # inp = tf.concat(1, [inp, tf.zeros(prev_z_sample])
+      if i > 0:
+        tf.get_variable_scope().reuse_variables()
+      output, new_state = cell(inp, states[-1])
+      outputs.append(output)
+      states.append(new_state)
+      if loop_function is not None:
+        prev = tf.stop_gradient(output)
+  return outputs, states
+
+def vae_decoder(decoder_inputs, z_samples, initial_state, cell, loop_function=None,
+                  scope=None, config=None):
+  """RNN decoder for the VAE sequence-to-sequence model.
+
+  Args:
+    decoder_inputs: a list of 2D Tensors [batch_size x cell.input_size].
+    z_samples: [batch_size x config.z_dim]
+    initial_state: 2D Tensor with shape [batch_size x cell.state_size].
+    cell: rnn_cell.RNNCell defining the cell function and size.
+    loop_function: if not None, this function will be applied to i-th output
+      in order to generate i+1-th input, and decoder_inputs will be ignored,
+      except for the first element ("GO" symbol). This can be used for decoding,
+      but also for training to emulate http://arxiv.org/pdf/1506.03099v2.pdf.
+      Signature -- loop_function(prev, i) = next
+        * prev is a 2D Tensor of shape [batch_size x cell.output_size],
+        * i is an integer, the step number (when advanced control is needed),
+        * next is a 2D Tensor of shape [batch_size x cell.input_size].
+    scope: VariableScope for the created subgraph; defaults to "rnn_decoder".
+
+  Returns:
+    outputs: A list of the same length as decoder_inputs of 2D Tensors with
+      shape [batch_size x cell.output_size] containing generated outputs.
+    states: The state of each cell in each time-step. This is a list with
+      length len(decoder_inputs) -- one item for each time-step.
+      Each item is a 2D Tensor of shape [batch_size x cell.state_size].
+      (Note that in some cases, like basic RNN cell or GRU cell, outputs and
+       states can be the same. They are different for LSTM cells though.)
+  """
+  with tf.variable_scope(scope or "rnn_decoder"):
+    states = [initial_state]
+    outputs = []
+    prev = None
+    for i in xrange(len(decoder_inputs)):
+      inp = decoder_inputs[i]
+      inp_z_sample = z_samples[i]
+      inp = tf.concat(1, [inp, inp_z_sample])
+      if loop_function is not None and prev is not None:
+        with tf.variable_scope("loop_function", reuse=True):
+          # We do not propagate gradients over the loop function.
+          inp = tf.stop_gradient(loop_function(prev, inp_z_sample))
       if i > 0:
         tf.get_variable_scope().reuse_variables()
       output, new_state = cell(inp, states[-1])
@@ -144,30 +193,55 @@ def rnn_decoder_argmax(decoder_inputs, initial_state, cell, num_symbols, output_
     with tf.device("/cpu:0"):
       embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
 
-    def extract_argmax_and_embed(prev, _):
+    def extract_argmax_and_embed(prev, i):
       """Loop_function that extracts the symbol from prev and embeds it."""
-      # print(prev)
+      print(i)
       if output_projection is not None:
-        prev_z_sample = tf.slice(prev, [1, cell.input_size], [1, config.z_dim])
-        print(prev_z_sample)
-        # tf.Print(prev)
-        # z_sample = tf.slice(prev, cell.input_size - config.z_dim, [])
+        # prev_z_sample = tf.slice(prev, [config.batch_size, cell.input_size], [config.batch_size, config.z_dim])
         prev = tf.nn.xw_plus_b(prev, output_projection[0], output_projection[1])
-        # prev = tf.concat(1, [prev, tf.zeros(z_sample])
       prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
       prev_embedding = tf.nn.embedding_lookup(embedding, prev_symbol)
       # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, tf.zeros([1, config.z_dim])])
-      # print(tf.zeros([1, config.z_dim]).get_shape())
-      # print(prev_z_sample.get_shape())
-      prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, prev_z_sample])
-      # print(prev_embedding_and_z_sample)
-      return prev_embedding_and_z_sample
+      # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, prev_z_sample])
+      return prev_embedding
 
     loop_function = None
     if feed_previous:
       loop_function = extract_argmax_and_embed
 
     return rnn_decoder(decoder_inputs, initial_state, cell,
+                       loop_function=loop_function, scope=scope, config=config)
+
+def vae_decoder_argmax(decoder_inputs, z_samples, initial_state, cell, num_symbols, output_projection=None, feed_previous=False, scope=None, config=None):
+  ### DECODER FOR VAE WITH SEPARATE Z_SAMPLES
+  if output_projection is not None:
+    proj_weights = tf.convert_to_tensor(output_projection[0], dtype=tf.float32)
+    proj_weights.get_shape().assert_is_compatible_with([cell.output_size,
+                                                        num_symbols])
+    proj_biases = tf.convert_to_tensor(output_projection[1], dtype=tf.float32)
+    proj_biases.get_shape().assert_is_compatible_with([num_symbols])
+
+  with tf.variable_scope(scope or "vae_decoder_argmax"):
+    with tf.variable_scope("embedding"):
+      with tf.device("/cpu:0"):
+        embedding = tf.get_variable("embedding", [num_symbols, cell.input_size])
+
+    def extract_argmax_and_embed(prev, prev_z_sample):
+      """Loop_function that extracts the symbol from prev and embeds it."""
+      if output_projection is not None:
+        # prev_z_sample = tf.slice(prev, [config.batch_size, cell.input_size], [config.batch_size, config.z_dim])
+        prev = tf.nn.xw_plus_b(prev, output_projection[0], output_projection[1])
+      prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+      prev_embedding = tf.nn.embedding_lookup(embedding, prev_symbol)
+      # prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, tf.zeros([1, config.z_dim])])
+      prev_embedding_and_z_sample = tf.concat(1, [prev_embedding, prev_z_sample])
+      return prev_embedding_and_z_sample
+
+    loop_function = None
+    if feed_previous:
+      loop_function = extract_argmax_and_embed
+
+    return vae_decoder(decoder_inputs, z_samples, initial_state, cell,
                        loop_function=loop_function, scope=scope, config=config)
 
 def embedding_rnn_decoder(decoder_inputs, initial_state, cell, num_symbols,
@@ -306,7 +380,7 @@ class PTBModel(object):
     log_sigmas = [mu_and_log_sigma[1] for mu_and_log_sigma in mu_and_log_sigmas]
 
     # epsilon is sampled from N(0,1) for location-scale transform
-    epsilons = [tf.random_normal([1, config.z_dim]) for i in range(len(log_sigmas))]
+    epsilons = [tf.random_normal([config.batch_size, config.z_dim]) for i in range(len(log_sigmas))]
 
     # do the location-scale transform
     z_samples = [tf.add(mu, tf.mul(tf.exp(log_sigma), epsilon)) for mu, log_sigma, epsilon in zip(mus, log_sigmas, epsilons)]
@@ -326,20 +400,31 @@ class PTBModel(object):
 
     # neg_KL = pprint(neg_KL, message='neg_KL')
 
-    # concatenate z_samples with previous timesteps
-    decoder_inputs = [tf.concat(1, [single_input, z_sample]) for single_input, z_sample in zip(inputs_encoder, z_samples)]
+    # print(decoder_inputs[0:10])#, [decoder_inputs[0]])
 
     # decoder_inputs[0] = pprint(decoder_inputs[0], message='decoder_input')
+    # decoder_inputs[0] = tf.Print(decoder_inputs[0], [decoder_inputs[0].get_shape()])
 
     # no pure decoding opt
     # outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
-    # with pure decoding opt
+
     softmax_w = tf.get_variable("softmax_w", [size, vocab_size])
     softmax_b = tf.get_variable("softmax_b", [vocab_size])
-    outputs_decoder, states_decoder = rnn_decoder_argmax(decoder_inputs, self._initial_state_decoder, cell_decoder, vocab_size,
+
+    # concatenate z_samples with previous timesteps
+    # decoder_inputs = [tf.concat(1, [single_input, z_sample]) for single_input, z_sample in zip(inputs_encoder, z_samples)]
+    # outputs_decoder, states_decoder = rnn_decoder_argmax(decoder_inputs, self._initial_state_decoder, cell_decoder, vocab_size,
+    #   output_projection=[softmax_w, softmax_b],
+    #   feed_previous=True,
+    #   config=config)
+
+    # refactored to be like sam's
+    # z_samples = [tf.reshape(z_sample, [1, config.z_dim]) for z_sample in z_samples]
+    outputs_decoder, states_decoder = vae_decoder_argmax(inputs_encoder, z_samples, self._initial_state_decoder, cell_decoder, vocab_size,
       output_projection=[softmax_w, softmax_b],
       feed_previous=True,
       config=config)
+
 
     # outputs_decoder[0] = pprint(outputs_decoder[0], message='outputs from decoder')
     # final output
@@ -432,15 +517,15 @@ class SmallConfig(object):
   learning_rate = 1.0
   max_grad_norm = 5 #grad clippin
   num_layers = 1
-  num_steps = 20
+  num_steps = 10#20
   hidden_size = 2#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
-  batch_size = 1#20
+  batch_size = 3
   vocab_size = 10000
-  z_dim = 20# 1 for debugging
+  z_dim = 3# 1 for debugging
   num_encoder_symbols = 2 * z_dim # we split encoder output in two to get mu, log_sigma
 
 
@@ -495,8 +580,8 @@ def run_epoch(session, m, data, eval_op, verbose=False):
     # print('^targets')
     costs += cost
     iters += m.num_steps
-
-    if verbose and step % (epoch_size // 10) == 10:
+    # if verbose and step % (epoch_size // 10) == 10:
+    if verbose and step % 10 == 0:
       print("%.3f ELBO: %.3f perplexity: %.3f speed: %.0f wps" %
             (step * 1.0 / epoch_size, costs / iters, np.exp(costs / iters),
              iters * m.batch_size / (time.time() - start_time)))
@@ -588,12 +673,8 @@ def decode():
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
     with tf.variable_scope("model", reuse=None, initializer=initializer):
+      config.batch_size = 1
       m = PTBModel(is_training=False, config=config, decode_only=True)
-      m.batch_size = 1
-      m.num_steps = 20
-    # with tf.variable_scope("model", reuse=True, initializer=initializer):
-    #   mvalid = PTBModel(is_training=False, config=config)
-    #   mtest = PTBModel(is_training=False, config=eval_config)
 
     # create saver to checkpoint
     saver = tf.train.Saver()
@@ -614,21 +695,28 @@ def decode():
       print('sample ', n_sample)
       start_word_id = np.random.choice(range(0, int(vocabulary) + 1))
       print('first word is ', id_to_word[start_word_id])
-      sentence_length = np.random.choice(range(5,25))
       sentence_ids = []
+      sentence_length = config.num_steps
 
       state = m.initial_state.eval()
+      for sentence in range(20):
+        x = np.floor(np.random.rand(1,sentence_length)).astype(np.int32)
+        cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
+                                     {m.input_data: x,
+                                      m.targets: x,
+                                      m.initial_state: state})
+        print(cost)
 
       for step, (x, y) in enumerate(reader.ptb_iterator(train_data, m.batch_size,
                                                         m.num_steps)):
-        print(step)
-        print(x)
-        print(y)
+        print(type(x)) # numpy.ndarray
+        print(type(x[0,0]))
+        print(x.shape)
         cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
                                      {m.input_data: x,
                                       m.targets: y,
                                       m.initial_state: state})
-        print(cost)
+        # print(cost)
 
       # for step in range(0, sentence_length):
       #   print(step)
@@ -660,10 +748,10 @@ def decode():
       sys.stdout.flush()
 
 def main(unused_args):
-  # if FLAGS.decode:
-  #   decode()
-  # else:
-  train(unused_args)
+  if FLAGS.decode:
+    decode()
+  else:
+    train(unused_args)
 
 if __name__ == "__main__":
     tf.app.run()
