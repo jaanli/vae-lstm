@@ -613,10 +613,10 @@ def train(unused_args):
   train_data, valid_data, test_data, _ = raw_data
 
   if FLAGS.debug:
-    train_data = train_data[0:1000]
-    valid_data = valid_data[0:1000]
-    test_data = test_data[0:1000]
-  # print(len(train_data))
+    train_data = train_data[0:2342]
+    valid_data = valid_data[0:1332]
+    test_data = test_data[0:987]
+    logging.info('train data length is ', len(train_data))
 
   config = get_config()
   eval_config = get_config()
@@ -654,7 +654,7 @@ def train(unused_args):
                                      verbose=True)
       # else:
         # train_perplexity = 0
-      save_path = saver.save(session, "./model.ckpt")
+      save_path = saver.save(session, "{}model.ckpt".format(FLAGS.out_dir))
       logging.info("Model saved in file: %s" % save_path)
       logging.info("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
       valid_perplexity = run_epoch(session, mvalid, valid_data, tf.no_op())
