@@ -54,7 +54,7 @@ from tensorflow.models.rnn import seq2seq
 #from tensorflow.models.rnn.ptb import reader
 from tensorflow.models.rnn import rnn
 from tensorflow.python.platform import gfile
-
+import logging
 
 import reader
 
@@ -62,18 +62,30 @@ import reader
 tf.set_random_seed(98765)
 
 flags = tf.flags
-logging = tf.logging
+# logging = tf.logging
 
 flags.DEFINE_string(
     "model", "small",
     "A type of model. Possible options are: small, medium, large.")
-flags.DEFINE_string("data_path", None, "data_path")
+flags.DEFINE_string("data_path", None, "data path")
 flags.DEFINE_string("checkpoint_dir", None, 'checkpoint dir to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
 flags.DEFINE_boolean('decode', False, 'decoding mode or not')
-
+flags.DEFINE_string('out_dir', None, "output directory")
 
 FLAGS = flags.FLAGS
+
+if not os.path.exists(FLAGS.out_dir):
+  os.makedirs(FLAGS.out_dir)
+
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+# create file handler which logs even debug messages
+fh = logging.FileHandler(FLAGS.out_dir + 'job.log', 'w')
+fh.setLevel(logging.DEBUG)
+logger.addHandler(fh)
+from tensorflow.python.platform import logging
+
 
 def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
                 scope=None, config=None):
@@ -575,7 +587,7 @@ def run_epoch(session, m, data, eval_op, verbose=False):
     iters += m.num_steps
     if verbose and step % (epoch_size // 10) == 10:
     # if verbose and step % 10 == 0:
-      print("%.3f ELBO: %.3f perplexity: %.3f speed: %.0f wps" %
+      logging.info("%.3f ELBO: %.3f perplexity: %.3f speed: %.0f wps" %
             (step * 1.0 / epoch_size, costs / iters, np.exp(costs / iters),
              iters * m.batch_size / (time.time() - start_time)))
 
@@ -604,7 +616,7 @@ def train(unused_args):
     train_data = train_data[0:1000]
     valid_data = valid_data[0:1000]
     test_data = test_data[0:1000]
-  print(len(train_data))
+  # print(len(train_data))
 
   config = get_config()
   eval_config = get_config()
@@ -630,26 +642,26 @@ def train(unused_args):
         print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
     else:
       tf.initialize_all_variables().run()
-      print('no checkpoint file found; initialized vars')
+      logging.info('not using checkpoint file found; initialized vars')
 
     for i in range(config.max_max_epoch):
       lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
       m.assign_lr(session, config.learning_rate * lr_decay)
 
-      print("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
+      logging.info("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
       # if not FLAGS.checkpoint_dir:
       train_perplexity = run_epoch(session, m, train_data, m.train_op,
                                      verbose=True)
       # else:
         # train_perplexity = 0
       save_path = saver.save(session, "./model.ckpt")
-      print("Model saved in file: %s" % save_path)
-      print("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
+      logging.info("Model saved in file: %s" % save_path)
+      logging.info("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
       valid_perplexity = run_epoch(session, mvalid, valid_data, tf.no_op())
-      print("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+      logging.info("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
 
     test_perplexity = run_epoch(session, mtest, test_data, tf.no_op())
-    print("Test Perplexity: %.3f" % test_perplexity)
+    logging.info("Test Perplexity: %.3f" % test_perplexity)
 
 def decode():
   # given a trained model's checkpoint file, this function generates sample sentences
@@ -676,9 +688,9 @@ def decode():
       if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
         # Restores from checkpoint
         saver.restore(session, ckpt.model_checkpoint_path)
-        print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+        logging.info('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
     else:
-      print('no checkpoint file found; need this to decode')
+      logging.info('no checkpoint file found; need this to decode')
       return
 
     # Decode from standard input.
@@ -688,7 +700,7 @@ def decode():
     for sentence in range(20):
       sys.stdout.write("> ")
       sys.stdout.flush()
-      print('sample ', sentence)
+      logging.info('sample ', sentence)
       # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
       x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
       # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
@@ -703,7 +715,7 @@ def decode():
       word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
       sentence = [id_to_word[word_id] for word_id in word_ids]
       sentence_str = ' '.join(sentence)
-      print(sentence_str)
+      logging.info(sentence_str)
       sys.stdout.flush()
 
 def main(unused_args):
