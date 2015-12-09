@@ -523,12 +523,12 @@ class SmallConfig(object):
   max_grad_norm = 5 #grad clippin
   num_layers = 1
   num_steps = 20#20
-  hidden_size = 2#100# 2 for debugging
+  hidden_size = 200#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
-  batch_size = 10
+  batch_size = 20
   vocab_size = 10000
   z_dim = 50# 1 for debugging
   num_encoder_symbols = 2 * z_dim # we split encoder output in two to get mu, log_sigma
