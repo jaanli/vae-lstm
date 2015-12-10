@@ -70,7 +70,6 @@ flags.DEFINE_string(
 flags.DEFINE_string("data_path", None, "data path")
 flags.DEFINE_string("checkpoint_dir", None, 'checkpoint dir to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
-flags.DEFINE_boolean('decode', False, 'decoding mode or not')
 flags.DEFINE_string('out_dir', None, "output directory")
 
 FLAGS = flags.FLAGS
@@ -719,7 +718,9 @@ def decode():
       sys.stdout.flush()
 
 def main(unused_args):
-  if FLAGS.decode:
+  if FLAGS.checkpoint_dir:
+    logging.info('decoding from: ')
+    logging.info(FLAGS.checkpoint_dir)
     decode()
   else:
     train(unused_args)
