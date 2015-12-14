@@ -697,9 +697,7 @@ def decode():
 
     state = m.initial_state.eval()
     for sentence_idx in range(20):
-      sys.stdout.write("> ")
-      sys.stdout.flush()
-      logging.info('sample ', sentence_idx)
+      print('sample {}'.format(sentence_idx))
       # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
       x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
       # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
@@ -714,8 +712,7 @@ def decode():
       word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
       sentence = [id_to_word[word_id] for word_id in word_ids]
       sentence_str = ' '.join(sentence)
-      logging.info(sentence_str)
-      sys.stdout.flush()
+      print(sentence_str)
 
 def main(unused_args):
   if FLAGS.checkpoint_dir:
