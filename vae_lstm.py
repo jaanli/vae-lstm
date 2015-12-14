@@ -695,6 +695,7 @@ def decode():
 
     # Decode from standard input.
     sentence_length = config.num_steps
+
     def sample_sentence(z_sample)
       state = m.initial_state.eval()
       for sentence_idx in range(10):
@@ -722,6 +723,7 @@ def decode():
         sentence_str = ' '.join(sentence)
         logging.info(sentence_str)
         sys.stdout.flush()
+
     for z_sample_idx in range(5):
       z_samples = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
       sample_sentence(z_samples)
