@@ -664,6 +664,7 @@ def train(unused_args):
 
 def decode():
   # given a trained model's checkpoint file, this function generates sample sentences
+  # decoding from a softmax
 
   # from tensorflow.models.rnn.translate.translate.py
   # get the vocab
@@ -710,9 +711,15 @@ def decode():
       logits = session.run([m.logits],{m.input_data: x,
                                         m.targets: x,
                                         m.initial_state: state})
-
-      word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
+      # greedy decoder, just argmax
+      # word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
+      # multinomial sampling, or gumbel sampling trick https://hips.seas.harvard.edu/blog/2013/04/06/the-gumbel-max-trick-for-discrete-distributions/
+      # cf. https://github.com/tensorflow/tensorflow/issues/456
+      word_ids = [int(np.argmax(logit - np.log(-np.log(np.random.uniform(size=logit.shape))))) for logit in logits[0]]
       sentence = [id_to_word[word_id] for word_id in word_ids]
+      # TODO: If there is an EOS symbol in outputs, cut them at that point.
+      # if data_utils.EOS_ID in outputs:
+      #   outputs = outputs[:outputs.index(data_utils.EOS_ID)]
       sentence_str = ' '.join(sentence)
       logging.info(sentence_str)
       sys.stdout.flush()
