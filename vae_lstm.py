@@ -696,7 +696,7 @@ def decode():
     # Decode from standard input.
     sentence_length = config.num_steps
 
-    def sample_sentence(z_sample)
+    def sample_sentence(z_sample):
       state = m.initial_state.eval()
       for sentence_idx in range(10):
         sys.stdout.write("> ")
