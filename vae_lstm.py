@@ -318,8 +318,8 @@ def pprint(tensor, message='', shape=False):
   else:
     return tf.Print(tensor, [tensor], message)
 
-class PTBModel(object):
-  """The PTB model."""
+class VAEModel(object):
+  """The VAE time-series model."""
 
   def __init__(self, is_training, config, decode_only=False):
     self.batch_size = batch_size = config.batch_size
@@ -365,22 +365,14 @@ class PTBModel(object):
     if is_training and config.keep_prob < 1:
       inputs = [tf.nn.dropout(input_, config.keep_prob) for input_ in inputs]
 
-    #inputs[0] = tf.Print(inputs[0], [inputs[0].get_shape(), inputs[0]])
-    # inputs[0] = pprint(inputs[0], shape=True, message='inputs')
-
     # initial inputs
     inputs_encoder = inputs
-    # inputs_encoder[0] = pprint(inputs_encoder[0], message='inputs to encoder')
 
     outputs_encoder, states_encoder = rnn.rnn(cell_encoder, inputs_encoder, initial_state=self._initial_state_encoder)
-
-    # outputs_encoder[0] = pprint(outputs_encoder[0], message='encoder outputs')
 
     # split the outputs to mu and log_sigma
     mu_and_log_sigmas = [tf.split(1, 2, output_encoder) for output_encoder in outputs_encoder]
     mus = [mu_and_log_sigma[0] for mu_and_log_sigma in mu_and_log_sigmas]
-    # print(mus[0].get_shape())
-    # mus[0] = pprint(mus[0], message='mu')
     log_sigmas = [mu_and_log_sigma[1] for mu_and_log_sigma in mu_and_log_sigmas]
 
     # epsilon is sampled from N(0,1) for location-scale transform
@@ -391,7 +383,6 @@ class PTBModel(object):
     if decode_only:
       # if we're decoding, just sample from a random normal
       z_samples = [tf.random_normal([1, config.z_dim]) for i in range(len(z_samples))]
-    # z_samples[0] = pprint(z_samples[0], message='z_sample')
 
     # calculate KL. equation 10 from kingma - auto-encoding variational bayes.
     neg_KL_list = [tf.add_n([tf.ones_like(mu), tf.log(tf.square(tf.exp(log_sigma))), tf.neg(tf.square(mu)), tf.neg(tf.square(tf.exp(log_sigma)))]) for mu, log_sigma in zip(mus, log_sigmas)]
@@ -401,13 +392,6 @@ class PTBModel(object):
 
     # merge the list like we merge the outputs
     neg_KL = tf.reshape(tf.concat(1, neg_KL_list), [-1, config.z_dim])
-
-    # neg_KL = pprint(neg_KL, message='neg_KL')
-
-    # print(decoder_inputs[0:10])#, [decoder_inputs[0]])
-
-    # decoder_inputs[0] = pprint(decoder_inputs[0], message='decoder_input')
-    # decoder_inputs[0] = tf.Print(decoder_inputs[0], [decoder_inputs[0].get_shape()])
 
     # no pure decoding opt
     # outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
@@ -423,29 +407,14 @@ class PTBModel(object):
     #   config=config)
 
     # refactored to be like sam's
-    # z_samples = [tf.reshape(z_sample, [1, config.z_dim]) for z_sample in z_samples]
-    outputs_decoder, states_decoder = vae_decoder_argmax(inputs_encoder, z_samples, self._initial_state_decoder, cell_decoder, vocab_size,
+    outputs_decoder, states_decoder = vae_decoder_argmax(
+      inputs_encoder, z_samples, self._initial_state_decoder, cell_decoder, vocab_size,
       output_projection=[softmax_w, softmax_b],
       feed_previous=True,
       config=config)
 
-
-    # outputs_decoder[0] = pprint(outputs_decoder[0], message='outputs from decoder')
     # final output
     outputs = outputs_decoder
-    # outputs[0] = pprint(outputs[0], message='outputs')
-
-    # print(len(outputs))
-    # print(outputs[0].get_shape())
-    # outputs = []
-    # states = []
-    # state = self._initial_state
-    # with tf.variable_scope("RNN"):
-    #   for time_step, input_ in enumerate(inputs):
-    #     if time_step > 0: tf.get_variable_scope().reuse_variables()
-    #     (cell_output, state) = cell(input_, state)
-    #     outputs.append(cell_output)
-    #     states.append(state)
 
     # do a softmax over the vocabulary using the decoder outputs!
     output = tf.reshape(tf.concat(1, outputs), [-1, size])
@@ -462,8 +431,20 @@ class PTBModel(object):
     # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
     neg_ELBO = KL_scalar + NLL_scalar# / batch_size
 
-    neg_ELBO_summary = tf.scalar_summary("neg_ELBO", neg_ELBO)
+    def normalize(tensor):
+      return tf.reduce_sum(
+      tf.mul(tf.constant(1/(batch_size * self.num_steps), shape=tensor.get_shape()), tensor))
+
+    # summaries
+    neg_ELBO_normalized = normalize(neg_ELBO)
+    KL_normalized = normalize(KL_scalar)
+    NLL_normalized = normalize(NLL_scalar)
+    neg_ELBO_summary = tf.scalar_summary("neg_ELBO_normalized", neg_ELBO_normalized)
+    KL_summary = tf.scalar_summary('KL_normalized', KL_normalized)
+    NLL_summary = tf.scalar_summary('NLL_normalized', NLL_normalized)
     merged = tf.merge_all_summaries()
+
+    # expose costs
     self._merged = merged
     self._neg_ELBO = neg_ELBO
     self._KL_scalar = KL_scalar
@@ -538,7 +519,7 @@ class SmallConfig(object):
   learning_rate = 1.0
   max_grad_norm = 5 #grad clippin
   num_layers = 1
-  num_steps = 20#20
+  num_steps = 25#20
   hidden_size = 200#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
@@ -600,7 +581,6 @@ def run_epoch(session, m, data, eval_op, epoch=None, writer=None, verbose=False)
                                    {m.input_data: x,
                                     m.targets: y,
                                     m.initial_state: state})
-      logging.info('adding summary')
       global_step = step + epoch_size * (epoch - 1)
       logging.info('adding summary, global step {}'.format(global_step))
       writer.add_summary(merged, global_step=global_step)
@@ -618,25 +598,27 @@ def run_epoch(session, m, data, eval_op, epoch=None, writer=None, verbose=False)
                                    {m.input_data: x,
                                     m.targets: y,
                                     m.initial_state: state})
-      logging.info('NOT adding summary')
+      # logging.info('NOT adding summary')
 
     neg_ELBOs += neg_ELBO
     KLs += KL_scalar
     NLLs += NLL_scalar
     iters += m.num_steps
 
+    normalization = iters * m.batch_size
+
     info = ("%.3f ELBO: %.3f KL: %.3f NLL: %.3f perplexity: %.3f speed: %.0f wps" %
-            (step * 1.0 / epoch_size,
-              neg_ELBOs / iters, KLs / iters,
-              NLLs / iters,
-              np.exp(NLLs / iters),
+            (step * 1.0 / normalization,
+              neg_ELBOs / normalization, KLs / normalization,
+              NLLs / normalization,
+              np.exp(NLLs / normalization),
              iters * m.batch_size / (time.time() - start_time)))
     if FLAGS.debug and verbose and step % 10 == 0:
       logging.info(info)
     elif not FLAGS.debug and verbose and step % (epoch_size // 10) == 10:
       logging.info(info)
 
-  return (neg_ELBOs / iters, KLs / iters, NLLs / iters, np.exp(NLLs / iters))
+  return (neg_ELBOs / normalization, KLs / normalization, NLLs / normalization, np.exp(NLLs / normalization))
 
 
 def get_config():
@@ -672,10 +654,10 @@ def train(unused_args):
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
     with tf.variable_scope("model", reuse=None, initializer=initializer):
-      m = PTBModel(is_training=True, config=config)
+      m = VAEModel(is_training=True, config=config)
     with tf.variable_scope("model", reuse=True, initializer=initializer):
-      mvalid = PTBModel(is_training=False, config=config)
-      mtest = PTBModel(is_training=False, config=eval_config)
+      mvalid = VAEModel(is_training=False, config=config)
+      mtest = VAEModel(is_training=False, config=eval_config)
 
     # create saver to checkpoint
     saver = tf.train.Saver()
@@ -705,7 +687,8 @@ def train(unused_args):
         i + 1, valid_ELBO, valid_KL, valid_NLL, valid_perplexity))
 
     test_ELBO, test_KL, test_NLL, test_perplexity = run_epoch(session, mtest, test_data, tf.no_op())
-    logging.info("Test Perplexity: %.3f" % test_perplexity)
+    logging.info("Test Valid ELBO: %.3f KL: %.3f NLL: %.3f Perplexity: %.3f" % (
+      test_ELBO, test_KL, test_NLL, test_perplexity))
 
 def decode():
   # given a trained model's checkpoint file, this function generates sample sentences
@@ -724,7 +707,7 @@ def decode():
                                                 config.init_scale)
     with tf.variable_scope("model", reuse=None, initializer=initializer):
       config.batch_size = 1
-      m = PTBModel(is_training=False, config=config, decode_only=True)
+      m = VAEModel(is_training=False, config=config, decode_only=True)
 
     # create saver to checkpoint
     saver = tf.train.Saver()
