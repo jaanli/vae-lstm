@@ -452,18 +452,22 @@ class PTBModel(object):
     logits = tf.nn.xw_plus_b(output,
                              softmax_w,
                              softmax_b)
-    neg_log_likelihood = seq2seq.sequence_loss_by_example([logits],
+    NLL = seq2seq.sequence_loss_by_example([logits],
                                             [tf.reshape(self._targets, [-1])],
                                             [tf.ones([batch_size * num_steps])],
                                             vocab_size)
-    neg_log_likelihood_scalar = tf.reduce_sum(neg_log_likelihood)
+    NLL_scalar = tf.reduce_sum(NLL)
     KL_scalar = tf.neg(tf.reduce_sum(neg_KL))
     # here we compute the *NEGATIVE* ELBO (because we don't know how the optimizer deals with negative learning rates / gradients)
     # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
-    neg_ELBO = KL_scalar + neg_log_likelihood_scalar# / batch_size
+    neg_ELBO = KL_scalar + NLL_scalar# / batch_size
+
+    neg_ELBO_summary = tf.scalar_summary("neg_ELBO", neg_ELBO)
+    merged = tf.merge_all_summaries()
+    self._merged = merged
     self._neg_ELBO = neg_ELBO
     self._KL_scalar = KL_scalar
-    self._neg_log_likelihood_scalar = neg_log_likelihood_scalar
+    self._NLL_scalar = NLL_scalar
     self._final_state = states_encoder[-1]
     if decode_only:
       self._logits = logits
@@ -488,6 +492,10 @@ class PTBModel(object):
     return self._input_data
 
   @property
+  def merged(self):
+      return self._merged
+
+  @property
   def targets(self):
     return self._targets
 
@@ -504,8 +512,8 @@ class PTBModel(object):
       return self._KL_scalar
 
   @property
-  def neg_log_likelihood_scalar(self):
-      return self._neg_log_likelihood_scalar
+  def NLL_scalar(self):
+      return self._NLL_scalar
 
   @property
   def final_state(self):
@@ -574,42 +582,61 @@ class LargeConfig(object):
   vocab_size = 10000
 
 
-def run_epoch(session, m, data, eval_op, verbose=False):
+def run_epoch(session, m, data, eval_op, epoch=None, writer=None, verbose=False):
   """Runs the model on the given data."""
   epoch_size = ((len(data) // m.batch_size) - 1) // m.num_steps
   start_time = time.time()
   neg_ELBOs = 0.0
   KLs = 0.0
-  neg_log_likelihoods = 0.0
+  NLLs = 0.0
   iters = 0
   state = m.initial_state.eval()
   for step, (x, y) in enumerate(reader.ptb_iterator(data, m.batch_size,
                                                     m.num_steps)):
-    neg_ELBO, KL_scalar, neg_log_likelihood_scalar, state, _ = session.run(
-      [m.neg_ELBO, m.KL_scalar, m.neg_log_likelihood_scalar, m.final_state, eval_op],
-                                 {m.input_data: x,
-                                  m.targets: y,
-                                  m.initial_state: state})
+    # write summaries
+    if FLAGS.debug and verbose and step % 10 == 0:
+      merged, neg_ELBO, KL_scalar, NLL_scalar, state, _ = session.run(
+        [m.merged, m.neg_ELBO, m.KL_scalar, m.NLL_scalar, m.final_state, eval_op],
+                                   {m.input_data: x,
+                                    m.targets: y,
+                                    m.initial_state: state})
+      logging.info('adding summary')
+      global_step = step + epoch_size * (epoch - 1)
+      logging.info('adding summary, global step {}'.format(global_step))
+      writer.add_summary(merged, global_step=global_step)
+    elif not FLAGS.debug and verbose and step % (epoch_size // 10) == 10:
+      merged, neg_ELBO, KL_scalar, NLL_scalar, state, _ = session.run(
+        [m.merged, m.neg_ELBO, m.KL_scalar, m.NLL_scalar, m.final_state, eval_op],
+                                   {m.input_data: x,
+                                    m.targets: y,
+                                    m.initial_state: state})
+      logging.info('adding summary')
+      writer.add_summary(merged, step)
+    else:
+      neg_ELBO, KL_scalar, NLL_scalar, state, _ = session.run(
+        [m.neg_ELBO, m.KL_scalar, m.NLL_scalar, m.final_state, eval_op],
+                                   {m.input_data: x,
+                                    m.targets: y,
+                                    m.initial_state: state})
+      logging.info('NOT adding summary')
 
     neg_ELBOs += neg_ELBO
     KLs += KL_scalar
-    neg_log_likelihoods += neg_log_likelihood_scalar
+    NLLs += NLL_scalar
     iters += m.num_steps
 
     info = ("%.3f ELBO: %.3f KL: %.3f NLL: %.3f perplexity: %.3f speed: %.0f wps" %
             (step * 1.0 / epoch_size,
               neg_ELBOs / iters, KLs / iters,
-              neg_log_likelihoods / iters,
-              np.exp(neg_log_likelihoods / iters),
+              NLLs / iters,
+              np.exp(NLLs / iters),
              iters * m.batch_size / (time.time() - start_time)))
     if FLAGS.debug and verbose and step % 10 == 0:
       logging.info(info)
     elif not FLAGS.debug and verbose and step % (epoch_size // 10) == 10:
       logging.info(info)
-      # train_perplexity_summary = tf.scalar_summary("perplexity", )
 
-
-  return np.exp(neg_ELBOs / iters)
+  return (neg_ELBOs / iters, KLs / iters, NLLs / iters, np.exp(NLLs / iters))
 
 
 def get_config():
@@ -659,24 +686,25 @@ def train(unused_args):
     else:
       tf.initialize_all_variables().run()
       logging.info('not using checkpoint file found; initialized vars')
+      # initialize summary writer
+      writer = tf.train.SummaryWriter(FLAGS.out_dir, session.graph_def)
 
     for i in range(config.max_max_epoch):
       lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
       m.assign_lr(session, config.learning_rate * lr_decay)
 
       logging.info("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
-      # if not FLAGS.checkpoint_file:
-      train_perplexity = run_epoch(session, m, train_data, m.train_op,
-                                     verbose=True)
-      # else:
-        # train_perplexity = 0
+      train_ELBO, train_KL, train_NLL, train_perplexity = run_epoch(session, m, train_data, m.train_op,
+        writer=writer, epoch=i+1, verbose=True)
       save_path = saver.save(session, "{}model.ckpt".format(FLAGS.out_dir))
       logging.info("Model saved in file: %s" % save_path)
-      logging.info("Epoch: %d Train Perplexity: %.3f" % (i + 1, train_perplexity))
-      valid_perplexity = run_epoch(session, mvalid, valid_data, tf.no_op())
-      logging.info("Epoch: %d Valid Perplexity: %.3f" % (i + 1, valid_perplexity))
+      logging.info("Epoch: %d Train ELBO: %.3f KL: %.3f NLL: %.3f Perplexity: %.3f" % (
+        i + 1, train_ELBO, train_KL, train_NLL, train_perplexity))
+      valid_ELBO, valid_KL, valid_NLL, valid_perplexity = run_epoch(session, mvalid, valid_data, tf.no_op())
+      logging.info("Epoch: %d Valid ELBO: %.3f KL: %.3f NLL: %.3f Perplexity: %.3f" % (
+        i + 1, valid_ELBO, valid_KL, valid_NLL, valid_perplexity))
 
-    test_perplexity = run_epoch(session, mtest, test_data, tf.no_op())
+    test_ELBO, test_KL, test_NLL, test_perplexity = run_epoch(session, mtest, test_data, tf.no_op())
     logging.info("Test Perplexity: %.3f" % test_perplexity)
 
 def decode():
