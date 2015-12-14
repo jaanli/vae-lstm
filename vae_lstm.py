@@ -545,6 +545,7 @@ class MediumConfig(object):
   lr_decay = 0.8
   batch_size = 20
   vocab_size = 10000
+  z_dim = 500
 
 
 
