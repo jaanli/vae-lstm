@@ -68,7 +68,7 @@ flags.DEFINE_string(
     "model", "small",
     "A type of model. Possible options are: small, medium, large.")
 flags.DEFINE_string("data_path", None, "data path")
-flags.DEFINE_string("checkpoint_dir", None, 'checkpoint dir to load')
+flags.DEFINE_string("checkpoint_file", None, 'checkpoint file to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
 flags.DEFINE_string('out_dir', None, "output directory")
 
@@ -452,17 +452,18 @@ class PTBModel(object):
     logits = tf.nn.xw_plus_b(output,
                              softmax_w,
                              softmax_b)
-    loss = seq2seq.sequence_loss_by_example([logits],
+    neg_log_likelihood = seq2seq.sequence_loss_by_example([logits],
                                             [tf.reshape(self._targets, [-1])],
                                             [tf.ones([batch_size * num_steps])],
                                             vocab_size)
-    loss_scalar = tf.reduce_sum(loss)
+    neg_log_likelihood_scalar = tf.reduce_sum(neg_log_likelihood)
     KL_scalar = tf.neg(tf.reduce_sum(neg_KL))
     # here we compute the *NEGATIVE* ELBO (because we don't know how the optimizer deals with negative learning rates / gradients)
     # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
-    cost = KL_scalar + loss_scalar# / batch_size
-    # cost = pprint(cost, message='ELBO')
-    self._cost = cost
+    neg_ELBO = KL_scalar + neg_log_likelihood_scalar# / batch_size
+    self._neg_ELBO = neg_ELBO
+    self._KL_scalar = KL_scalar
+    self._neg_log_likelihood_scalar = neg_log_likelihood_scalar
     self._final_state = states_encoder[-1]
     if decode_only:
       self._logits = logits
@@ -473,7 +474,7 @@ class PTBModel(object):
 
     self._lr = tf.Variable(0.0, trainable=False)
     tvars = tf.trainable_variables()
-    grads, _ = tf.clip_by_global_norm(tf.gradients(cost, tvars),
+    grads, _ = tf.clip_by_global_norm(tf.gradients(neg_ELBO, tvars),
                                       config.max_grad_norm)
     optimizer = tf.train.GradientDescentOptimizer(self.lr)
     # optimizer = tf.train.AdamOptimizer(self.lr)
@@ -495,8 +496,16 @@ class PTBModel(object):
     return self._initial_state_encoder
 
   @property
-  def cost(self):
-    return self._cost
+  def neg_ELBO(self):
+    return self._neg_ELBO
+
+  @property
+  def KL_scalar(self):
+      return self._KL_scalar
+
+  @property
+  def neg_log_likelihood_scalar(self):
+      return self._neg_log_likelihood_scalar
 
   @property
   def final_state(self):
@@ -569,28 +578,38 @@ def run_epoch(session, m, data, eval_op, verbose=False):
   """Runs the model on the given data."""
   epoch_size = ((len(data) // m.batch_size) - 1) // m.num_steps
   start_time = time.time()
-  costs = 0.0
+  neg_ELBOs = 0.0
+  KLs = 0.0
+  neg_log_likelihoods = 0.0
   iters = 0
   state = m.initial_state.eval()
   for step, (x, y) in enumerate(reader.ptb_iterator(data, m.batch_size,
                                                     m.num_steps)):
-    cost, state, _ = session.run([m.cost, m.final_state, eval_op],
+    neg_ELBO, KL_scalar, neg_log_likelihood_scalar, state, _ = session.run(
+      [m.neg_ELBO, m.KL_scalar, m.neg_log_likelihood_scalar, m.final_state, eval_op],
                                  {m.input_data: x,
                                   m.targets: y,
                                   m.initial_state: state})
-    # print(x)
-    # print('^inputs')
-    # print(y)
-    # print('^targets')
-    costs += cost
-    iters += m.num_steps
-    if verbose and step % (epoch_size // 10) == 10:
-    # if verbose and step % 10 == 0:
-      logging.info("%.3f ELBO: %.3f perplexity: %.3f speed: %.0f wps" %
-            (step * 1.0 / epoch_size, costs / iters, np.exp(costs / iters),
-             iters * m.batch_size / (time.time() - start_time)))
 
-  return np.exp(costs / iters)
+    neg_ELBOs += neg_ELBO
+    KLs += KL_scalar
+    neg_log_likelihoods += neg_log_likelihood_scalar
+    iters += m.num_steps
+
+    info = ("%.3f ELBO: %.3f KL: %.3f NLL: %.3f perplexity: %.3f speed: %.0f wps" %
+            (step * 1.0 / epoch_size,
+              neg_ELBOs / iters, KLs / iters,
+              neg_log_likelihoods / iters,
+              np.exp(neg_log_likelihoods / iters),
+             iters * m.batch_size / (time.time() - start_time)))
+    if FLAGS.debug and verbose and step % 10 == 0:
+      logging.info(info)
+    elif not FLAGS.debug and verbose and step % (epoch_size // 10) == 10:
+      logging.info(info)
+      # train_perplexity_summary = tf.scalar_summary("perplexity", )
+
+
+  return np.exp(neg_ELBOs / iters)
 
 
 def get_config():
@@ -633,12 +652,10 @@ def train(unused_args):
 
     # create saver to checkpoint
     saver = tf.train.Saver()
-    if FLAGS.checkpoint_dir:
-      ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
-      if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
-        # Restores from checkpoint
-        saver.restore(session, ckpt.model_checkpoint_path)
-        print('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+    if FLAGS.checkpoint_file:
+      # Restores from checkpoint
+      saver.restore(session, FLAGS.checkpoint_file)
+      logging.info('loaded checkpoint from %s' % FLAGS.checkpoint_file)
     else:
       tf.initialize_all_variables().run()
       logging.info('not using checkpoint file found; initialized vars')
@@ -648,7 +665,7 @@ def train(unused_args):
       m.assign_lr(session, config.learning_rate * lr_decay)
 
       logging.info("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
-      # if not FLAGS.checkpoint_dir:
+      # if not FLAGS.checkpoint_file:
       train_perplexity = run_epoch(session, m, train_data, m.train_op,
                                      verbose=True)
       # else:
@@ -683,14 +700,12 @@ def decode():
 
     # create saver to checkpoint
     saver = tf.train.Saver()
-    if FLAGS.checkpoint_dir:
-      ckpt = tf.train.get_checkpoint_state(FLAGS.checkpoint_dir)
-      if ckpt and gfile.Exists(ckpt.model_checkpoint_path):
-        # Restores from checkpoint
-        saver.restore(session, ckpt.model_checkpoint_path)
-        logging.info('loaded checkpoint from %s' % ckpt.model_checkpoint_path)
+    if FLAGS.checkpoint_file:
+      # Restores from checkpoint
+      saver.restore(session, FLAGS.checkpoint_file)
+      logging.info('loaded checkpoint from %s' % FLAGS.checkpoint_file)
     else:
-      logging.info('no checkpoint file found; need this to decode')
+      logging.error('no checkpoint file found; need this to decode')
       return
 
     # Decode from standard input.
@@ -699,15 +714,12 @@ def decode():
     def sample_sentence(z_sample):
       state = m.initial_state.eval()
       for sentence_idx in range(10):
-        sys.stdout.write("> ")
-        sys.stdout.flush()
-        logging.info('sample ', sentence_idx)
         # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
-        # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
+        # neg_ELBO, state, _ = session.run([m.neg_ELBO, m.final_state, tf.no_op()],
         #                              {m.input_data: x,
         #                               m.targets: x,
         #                               m.initial_state: state})
-        # print(cost)
+        # print(neg_ELBO)
         logits = session.run([m.logits],{m.input_data: z_samples,
                                           m.targets: z_samples,
                                           m.initial_state: state})
@@ -721,17 +733,21 @@ def decode():
         # if data_utils.EOS_ID in outputs:
         #   outputs = outputs[:outputs.index(data_utils.EOS_ID)]
         sentence_str = ' '.join(sentence)
+        logging.info('sample {}'.format(sentence_idx))
         logging.info(sentence_str)
         sys.stdout.flush()
 
-    for z_sample_idx in range(5):
+    for z_sample_idx in range(10):
       z_samples = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
+      logging.info('z_sample_idx {}'.format(z_sample_idx))
+      logging.info('----------------------------------')
       sample_sentence(z_samples)
+      logging.info('----------------------------------')
 
 def main(unused_args):
-  if FLAGS.checkpoint_dir:
+  if FLAGS.checkpoint_file:
     logging.info('decoding from: ')
-    logging.info(FLAGS.checkpoint_dir)
+    logging.info(FLAGS.checkpoint_file)
     decode()
   else:
     train(unused_args)
