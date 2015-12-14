@@ -340,8 +340,8 @@ class PTBModel(object):
             lstm_encoder_cell, output_keep_prob=config.keep_prob)
       cell_encoder = rnn_cell.MultiRNNCell([lstm_encoder_cell] * config.num_layers)
 
-      # this is the linear projection layer down to num_encoder_symbols
-      cell_encoder = rnn_cell.OutputProjectionWrapper(cell_encoder, config.num_encoder_symbols)
+      # this is the linear projection layer down to num_encoder_symbols = 2*config.z_dim
+      cell_encoder = rnn_cell.OutputProjectionWrapper(cell_encoder, 2 * config.z_dim)
 
       self._initial_state_encoder = cell_encoder.zero_state(batch_size, tf.float32)
 
@@ -530,23 +530,22 @@ class SmallConfig(object):
   batch_size = 20
   vocab_size = 10000
   z_dim = 50# 1 for debugging
-  num_encoder_symbols = 2 * z_dim # we split encoder output in two to get mu, log_sigma
-
 
 class MediumConfig(object):
   """Medium config."""
   init_scale = 0.05
   learning_rate = 1.0
   max_grad_norm = 5
-  num_layers = 2
+  num_layers = 1 #2
   num_steps = 35
-  hidden_size = 650
+  hidden_size = 650 #650
   max_epoch = 6
   max_max_epoch = 39
   keep_prob = 0.5
   lr_decay = 0.8
-  batch_size = 1#20
+  batch_size = 20
   vocab_size = 10000
+
 
 
 class LargeConfig(object):
