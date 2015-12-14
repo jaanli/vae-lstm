@@ -695,34 +695,36 @@ def decode():
 
     # Decode from standard input.
     sentence_length = config.num_steps
-    x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
-
-    state = m.initial_state.eval()
-    for sentence_idx in range(20):
-      sys.stdout.write("> ")
-      sys.stdout.flush()
-      logging.info('sample ', sentence_idx)
-      # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
-      # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
-      #                              {m.input_data: x,
-      #                               m.targets: x,
-      #                               m.initial_state: state})
-      # print(cost)
-      logits = session.run([m.logits],{m.input_data: x,
-                                        m.targets: x,
-                                        m.initial_state: state})
-      # greedy decoder, just argmax
-      # word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
-      # multinomial sampling, or gumbel sampling trick https://hips.seas.harvard.edu/blog/2013/04/06/the-gumbel-max-trick-for-discrete-distributions/
-      # cf. https://github.com/tensorflow/tensorflow/issues/456
-      word_ids = [int(np.argmax(logit - np.log(-np.log(np.random.uniform(size=logit.shape))))) for logit in logits[0]]
-      sentence = [id_to_word[word_id] for word_id in word_ids]
-      # TODO: If there is an EOS symbol in outputs, cut them at that point.
-      # if data_utils.EOS_ID in outputs:
-      #   outputs = outputs[:outputs.index(data_utils.EOS_ID)]
-      sentence_str = ' '.join(sentence)
-      logging.info(sentence_str)
-      sys.stdout.flush()
+    def sample_sentence(z_sample)
+      state = m.initial_state.eval()
+      for sentence_idx in range(10):
+        sys.stdout.write("> ")
+        sys.stdout.flush()
+        logging.info('sample ', sentence_idx)
+        # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
+        # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
+        #                              {m.input_data: x,
+        #                               m.targets: x,
+        #                               m.initial_state: state})
+        # print(cost)
+        logits = session.run([m.logits],{m.input_data: z_samples,
+                                          m.targets: z_samples,
+                                          m.initial_state: state})
+        # greedy decoder, just argmax
+        # word_ids = [int(np.argmax(logit, axis=0)) for logit in logits[0]]
+        # multinomial sampling, or gumbel sampling trick https://hips.seas.harvard.edu/blog/2013/04/06/the-gumbel-max-trick-for-discrete-distributions/
+        # cf. https://github.com/tensorflow/tensorflow/issues/456
+        word_ids = [int(np.argmax(logit - np.log(-np.log(np.random.uniform(size=logit.shape))))) for logit in logits[0]]
+        sentence = [id_to_word[word_id] for word_id in word_ids]
+        # TODO: If there is an EOS symbol in outputs, cut them at that point.
+        # if data_utils.EOS_ID in outputs:
+        #   outputs = outputs[:outputs.index(data_utils.EOS_ID)]
+        sentence_str = ' '.join(sentence)
+        logging.info(sentence_str)
+        sys.stdout.flush()
+    for z_sample_idx in range(5):
+      z_samples = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
+      sample_sentence(z_samples)
 
 def main(unused_args):
   if FLAGS.checkpoint_dir:
