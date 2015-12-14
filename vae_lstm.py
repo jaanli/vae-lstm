@@ -695,6 +695,7 @@ def decode():
 
     # Decode from standard input.
     sentence_length = config.num_steps
+    x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
 
     state = m.initial_state.eval()
     for sentence_idx in range(20):
@@ -702,7 +703,6 @@ def decode():
       sys.stdout.flush()
       logging.info('sample ', sentence_idx)
       # only the first word is used during decoding; the rest are ignored using the loop_function in vae_decoder
-      x = np.floor(np.random.rand(1,sentence_length)*config.vocab_size).astype(np.int32)
       # cost, state, _ = session.run([m.cost, m.final_state, tf.no_op()],
       #                              {m.input_data: x,
       #                               m.targets: x,
