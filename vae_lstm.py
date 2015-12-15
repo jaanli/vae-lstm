@@ -85,6 +85,11 @@ fh.setLevel(logging.DEBUG)
 logger.addHandler(fh)
 from tensorflow.python.platform import logging
 
+logging.info('FLAGS.model: {}'.format(FLAGS.model))
+logging.info('FLAGS.data_path: {}'.format(FLAGS.data_path))
+logging.info('FLAGS.checkpoint_file: {}'.format(FLAGS.checkpoint_file))
+logging.info('FLAGS.debug: {}'.format(FLAGS.debug))
+logging.info('FLAGS.out_dir: {}'.format(FLAGS.out_dir))
 
 def rnn_decoder(decoder_inputs, initial_state, cell, loop_function=None,
                 scope=None, config=None):
@@ -325,6 +330,7 @@ class VAEModel(object):
     self.batch_size = batch_size = config.batch_size
     self.num_steps = num_steps = config.num_steps
     size = config.hidden_size
+    self.is_training = is_training
     vocab_size = config.vocab_size
 
     self._input_data = tf.placeholder(tf.int32, [batch_size, num_steps])
@@ -584,6 +590,7 @@ class LargeConfig(object):
 def run_epoch(session, m, data, eval_op, epoch=None, writer=None, verbose=False):
   """Runs the model on the given data."""
   epoch_size = ((len(data) // m.batch_size) - 1) // m.num_steps
+  logging.info('epoch size: {}'.format(epoch_size))
   start_time = time.time()
   neg_ELBOs = 0.0
   KLs = 0.0
@@ -592,31 +599,32 @@ def run_epoch(session, m, data, eval_op, epoch=None, writer=None, verbose=False)
   state = m.initial_state.eval()
   for step, (x, y) in enumerate(reader.ptb_iterator(data, m.batch_size,
                                                     m.num_steps)):
-    # write summaries
-    if FLAGS.debug and verbose and step % 10 == 0:
+    # write summaries, but only when we're training!
+    if m.is_training:
+      global_step = step + epoch_size * (epoch - 1)
+    if m.is_training and FLAGS.debug and verbose and step % 10 == 0:
       merged, neg_ELBO, KL_scalar, NLL_scalar, state, _ = session.run(
         [m.merged, m.neg_ELBO, m.KL_scalar, m.NLL_scalar, m.final_state, eval_op],
                                    {m.input_data: x,
                                     m.targets: y,
                                     m.initial_state: state})
-      global_step = step + epoch_size * (epoch - 1)
       logging.info('adding summary, global step {}'.format(global_step))
       writer.add_summary(merged, global_step=global_step)
-    elif not FLAGS.debug and verbose and step % (epoch_size // 10) == 10:
+    elif m.is_training and not FLAGS.debug and verbose and step % (epoch_size // 10) == 10:
       merged, neg_ELBO, KL_scalar, NLL_scalar, state, _ = session.run(
         [m.merged, m.neg_ELBO, m.KL_scalar, m.NLL_scalar, m.final_state, eval_op],
                                    {m.input_data: x,
                                     m.targets: y,
                                     m.initial_state: state})
-      logging.info('adding summary')
-      writer.add_summary(merged, step)
+      logging.info('adding summary (non-debug), global step {}'.format(global_step))
+      writer.add_summary(merged, global_step=global_step)
     else:
       neg_ELBO, KL_scalar, NLL_scalar, state, _ = session.run(
         [m.neg_ELBO, m.KL_scalar, m.NLL_scalar, m.final_state, eval_op],
                                    {m.input_data: x,
                                     m.targets: y,
                                     m.initial_state: state})
-      # logging.info('NOT adding summary')
+      # logging.info('NOT adding summary, step {}'.format(step))
 
     neg_ELBOs += neg_ELBO
     KLs += KL_scalar
@@ -626,7 +634,7 @@ def run_epoch(session, m, data, eval_op, epoch=None, writer=None, verbose=False)
     normalization = iters * m.batch_size
 
     info = ("%.3f ELBO: %.3f KL: %.3f NLL: %.3f perplexity: %.3f speed: %.0f wps" %
-            (step * 1.0 / normalization,
+            (step * 1.0 / epoch_size,
               neg_ELBOs / normalization, KLs / normalization,
               NLLs / normalization,
               np.exp(NLLs / normalization),
@@ -661,7 +669,7 @@ def train(unused_args):
     train_data = train_data[0:2342]
     valid_data = valid_data[0:1332]
     test_data = test_data[0:987]
-    logging.info('train data length is ', len(train_data))
+    logging.info('train data length is {}'.format(len(train_data)))
 
   config = get_config()
   eval_config = get_config()
