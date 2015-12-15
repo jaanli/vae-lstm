@@ -376,13 +376,13 @@ class VAEModel(object):
     log_sigmas = [mu_and_log_sigma[1] for mu_and_log_sigma in mu_and_log_sigmas]
 
     # epsilon is sampled from N(0,1) for location-scale transform
-    epsilons = [tf.random_normal([config.batch_size, config.z_dim]) for i in range(len(log_sigmas))]
+    epsilons = [tf.random_normal([config.batch_size, config.z_dim], dtype=tf.float32) for i in range(len(log_sigmas))]
 
     # do the location-scale transform
     z_samples = [tf.add(mu, tf.mul(tf.exp(log_sigma), epsilon)) for mu, log_sigma, epsilon in zip(mus, log_sigmas, epsilons)]
     if decode_only:
       # if we're decoding, just sample from a random normal
-      z_samples = [tf.random_normal([1, config.z_dim]) for i in range(len(z_samples))]
+      z_samples = [tf.random_normal([1, config.z_dim], dtype=tf.float32) for i in range(len(z_samples))]
 
     # calculate KL. equation 10 from kingma - auto-encoding variational bayes.
     neg_KL_list = [tf.add_n([tf.ones_like(mu), tf.log(tf.square(tf.exp(log_sigma))), tf.neg(tf.square(mu)), tf.neg(tf.square(tf.exp(log_sigma)))]) for mu, log_sigma in zip(mus, log_sigmas)]
@@ -421,12 +421,15 @@ class VAEModel(object):
     logits = tf.nn.xw_plus_b(output,
                              softmax_w,
                              softmax_b)
+
     NLL = seq2seq.sequence_loss_by_example([logits],
                                             [tf.reshape(self._targets, [-1])],
                                             [tf.ones([batch_size * num_steps])],
                                             vocab_size)
+
     NLL_scalar = tf.reduce_sum(NLL)
     KL_scalar = tf.neg(tf.reduce_sum(neg_KL))
+
     # here we compute the *NEGATIVE* ELBO (because we don't know how the optimizer deals with negative learning rates / gradients)
     # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
     neg_ELBO = KL_scalar + NLL_scalar# / batch_size
@@ -442,14 +445,13 @@ class VAEModel(object):
     neg_ELBO_summary = tf.scalar_summary("neg_ELBO_normalized", neg_ELBO_normalized)
     KL_summary = tf.scalar_summary('KL_normalized', KL_normalized)
     NLL_summary = tf.scalar_summary('NLL_normalized', NLL_normalized)
-    merged = tf.merge_all_summaries()
 
-    # expose costs
-    self._merged = merged
+    # expose costs, h
     self._neg_ELBO = neg_ELBO
     self._KL_scalar = KL_scalar
     self._NLL_scalar = NLL_scalar
     self._final_state = states_encoder[-1]
+
     if decode_only:
       self._logits = logits
       return
@@ -457,13 +459,29 @@ class VAEModel(object):
     if not is_training:
       return
 
-    self._lr = tf.Variable(0.0, trainable=False)
+    self._lr = tf.Variable(0.0, trainable=False, name='learning_rate')
     tvars = tf.trainable_variables()
-    grads, _ = tf.clip_by_global_norm(tf.gradients(neg_ELBO, tvars),
+    tvar_names = [tvar.name for tvar in tvars]
+
+    grads_unclipped = tf.gradients(neg_ELBO, tvars)
+    grads, _ = tf.clip_by_global_norm(grads_unclipped,
                                       config.max_grad_norm)
-    optimizer = tf.train.GradientDescentOptimizer(self.lr)
-    # optimizer = tf.train.AdamOptimizer(self.lr)
+
+    grad_hists = []
+    for idx, grad in enumerate(grads_unclipped):
+      if grad is None:
+        pass
+      else:
+        grad_hists.append(tf.histogram_summary(tvar_names[idx], grad))
+
+    # optimizer = tf.train.GradientDescentOptimizer(self.lr)
+    #NB: for adam, need to set epsilon to other than the default 1e-8, otherwise get nans!
+    optimizer = tf.train.AdamOptimizer(learning_rate=self.lr, epsilon=1e-1)
     self._train_op = optimizer.apply_gradients(zip(grads, tvars))
+
+    merged = tf.merge_all_summaries()
+    self._merged = merged
+
 
   def assign_lr(self, session, lr_value):
     session.run(tf.assign(self.lr, lr_value))
@@ -516,7 +534,7 @@ class VAEModel(object):
 class SmallConfig(object):
   """Small config."""
   init_scale = 0.1
-  learning_rate = 1.0
+  learning_rate = 0.9#1.0
   max_grad_norm = 5 #grad clippin
   num_layers = 1
   num_steps = 25#20
@@ -529,6 +547,7 @@ class SmallConfig(object):
   vocab_size = 10000
   z_dim = 50# 1 for debugging
 
+
 class MediumConfig(object):
   """Medium config."""
   init_scale = 0.05
@@ -537,14 +556,13 @@ class MediumConfig(object):
   num_layers = 1 #2
   num_steps = 35
   hidden_size = 650 #650
-  max_epoch = 6
+  max_epoch = 10 #6
   max_max_epoch = 39
   keep_prob = 0.5
   lr_decay = 0.8
   batch_size = 20
   vocab_size = 10000
   z_dim = 500
-
 
 
 class LargeConfig(object):
