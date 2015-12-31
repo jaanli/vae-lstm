@@ -14,6 +14,7 @@ import logging, time
 flags = tf.flags
 
 flags.DEFINE_string('out_dir', None, "output directory")
+flags.DEFINE_boolean('mirror_autoencoder', False, 'whether to use mirror autoencoder training')
 
 FLAGS = flags.FLAGS
 
@@ -67,7 +68,7 @@ class VariationalAutoencoder(object):
         self.x = tf.placeholder(tf.float32, [None, network_architecture["n_input"]])
 
         # Create autoencoder network
-        self._create_network()
+        self.network_weights = self._create_network()
         # Define loss function based variational upper-bound and
         # corresponding optimizer
         self._create_loss_optimizer()
@@ -106,6 +107,8 @@ class VariationalAutoencoder(object):
         self.x_reconstr_mean = \
             self._generator_network(network_weights["weights_gener"],
                                     network_weights["biases_gener"])
+
+        return network_weights
 
     def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2,
                             n_hidden_gener_1,  n_hidden_gener_2,
@@ -187,7 +190,18 @@ class VariationalAutoencoder(object):
         self.cost = tf.reduce_mean(reconstr_loss + latent_loss)   # average over batch
 
         # Compute the gradients for a list of variables.
-        tvars = tf.trainable_variables()
+        # tvars = tf.trainable_variables()
+
+        # isolate recognition / encoder network weights wq
+        tvars = self.network_weights['weights_recog'].values() + self.network_weights['biases_recog'].values()
+
+        print FLAGS.mirror_autoencoder
+        if not FLAGS.mirror_autoencoder:
+            # append generative / decoder network weights wp
+            print 'appending generative weights wp'
+            tvars = tvars + self.network_weights['weights_gener'].values() + self.network_weights['biases_gener'].values()
+
+        print [var.name for var in tvars]
         grads_unclipped = tf.gradients(self.cost, tvars)
 
         # Use ADAM optimizer
