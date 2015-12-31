@@ -191,6 +191,20 @@ class VariationalAutoencoder(object):
         self.KL = tf.reduce_mean(latent_loss)
         self.NLL = tf.reduce_mean(reconstr_loss)
 
+        '''calculate number of approximate active units as in burda.
+        i.e. take the expectation of the draw from the posterior (the mean in this gaussian case).
+        then calculate the variance, and threshold it heuristically.
+        ref: https://github.com/yburda/iwae/blob/master/iwae.py#L268 and L288
+        '''
+        self.z_mean.set_shape([self.batch_size, self.z_mean.get_shape()[1]])
+        _, variance_of_batch_means = tf.nn.moments(self.z_mean, axes=[0])
+        thresholded = tf.greater(variance_of_batch_means, tf.constant(0.01,
+                                 dtype=tf.float32, shape=variance_of_batch_means.get_shape()))
+        # thresholded_float = tf.cast(thresholded, dtype=tf.float32)
+        num_active = tf.reduce_sum(thresholded)
+        # num_active = tf.Print(num_active, [num_active], 'num active')
+
+        active_unit_summary = tf.scalar_summary('approximate number of active units', num_active)
         KL_summary = tf.scalar_summary('KL', self.KL)
         NLL_summary = tf.scalar_summary('NLL', self.NLL)
         neg_ELBO_summary = tf.scalar_summary("neg_ELBO", self.cost)
@@ -241,7 +255,7 @@ class VariationalAutoencoder(object):
                              feed_dict={self.x: X})
 
 def train(network_architecture, learning_rate=0.001,
-          batch_size=100, training_epochs=10, display_step=5):
+          batch_size=100, training_epochs=50, display_step=5):
     vae = VariationalAutoencoder(network_architecture,
                                  learning_rate=learning_rate,
                                  batch_size=batch_size)
