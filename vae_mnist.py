@@ -185,9 +185,16 @@ class VariationalAutoencoder(object):
                                            - tf.exp(self.z_log_sigma_sq), 1)
 
         self.cost = tf.reduce_mean(reconstr_loss + latent_loss)   # average over batch
+
+        # Compute the gradients for a list of variables.
+        tvars = tf.trainable_variables()
+        grads_unclipped = tf.gradients(self.cost, tvars)
+
         # Use ADAM optimizer
-        self.optimizer = \
-            tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
+        self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)#.minimize(self.cost)
+
+        self.train_op = self.optimizer.apply_gradients(zip(grads_unclipped, tvars))
+
         self.KL = tf.reduce_mean(latent_loss)
         self.NLL = tf.reduce_mean(reconstr_loss)
 
@@ -200,9 +207,9 @@ class VariationalAutoencoder(object):
         _, variance_of_batch_means = tf.nn.moments(self.z_mean, axes=[0])
         thresholded = tf.greater(variance_of_batch_means, tf.constant(0.01,
                                  dtype=tf.float32, shape=variance_of_batch_means.get_shape()))
-        # thresholded_float = tf.cast(thresholded, dtype=tf.float32)
-        num_active = tf.reduce_sum(thresholded)
-        # num_active = tf.Print(num_active, [num_active], 'num active')
+        thresholded_float = tf.cast(thresholded, dtype=tf.float32)
+        num_active = tf.reduce_sum(thresholded_float)
+        num_active = tf.Print(num_active, [num_active], 'active latent dimensions: ')
 
         active_unit_summary = tf.scalar_summary('approximate number of active units', num_active)
         KL_summary = tf.scalar_summary('KL', self.KL)
@@ -218,11 +225,11 @@ class VariationalAutoencoder(object):
         Return cost of mini-batch.
         """
         if write_summary:
-          merged, opt, cost, KL, NLL = self.sess.run((self.merged, self.optimizer, self.cost, self.KL, self.NLL), feed_dict={self.x: X})
+          merged, train_op, cost, KL, NLL = self.sess.run((self.merged, self.train_op, self.cost, self.KL, self.NLL), feed_dict={self.x: X})
           logging.info('adding summary, global step {}'.format(global_step))
           self.writer.add_summary(merged, global_step=global_step)
         else:
-          opt, cost, KL, NLL = self.sess.run((self.optimizer, self.cost, self.KL, self.NLL), feed_dict={self.x: X})
+          train_op, cost, KL, NLL = self.sess.run((self.train_op, self.cost, self.KL, self.NLL), feed_dict={self.x: X})
 
         cost_dict = {'ELBO': cost,
                       'KL': KL,

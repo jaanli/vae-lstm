@@ -440,6 +440,10 @@ class VAEModel(object):
     # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
     neg_ELBO = KL_scalar + NLL_scalar# / batch_size
 
+    grads_unclipped_wp = tf.gradients(neg_ELBO, tvars_wp)
+    grads_wp, _ = tf.clip_by_global_norm(grads_unclipped_wp,
+                                      config.max_grad_norm)
+
     def normalize(tensor):
       return tf.reduce_sum(
       tf.mul(tf.constant(1/(batch_size * self.num_steps), shape=tensor.get_shape()), tensor))
