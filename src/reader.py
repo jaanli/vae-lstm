@@ -21,7 +21,7 @@ from tensorflow.python.platform import gfile
 
 def _read_words(filename):
   with gfile.GFile(filename, "r") as f:
-    return f.read().replace("\n", "<eos>").split()
+    return f.read().replace("\n", "<eos>").split(' ')
 
 
 def _build_vocab(filename):

@@ -1,0 +1,43 @@
+% !TEX program = pdflatex
+\input{preamble/preamble.tex}
+\input{preamble/preamble_math.tex}
+\input{preamble/preamble_acronyms.tex}
+
+% \linenumbers
+
+\title{BRiSK: Timeseries recommendations on the arXiv}
+\author{DL, JA}
+\date{January 22, 2016}
+
+\begin{document}
+\maketitle
+
+Inference is expensive, especially in Bayesian timeseries models with long-term dependencies such as factorial hidden markov models. Recently, variational autoencoder methods \citep{Kingma2014} have emerged to enable efficient inference of complex LSTM-based timeseries models \citep{Bowman2015a}.
+
+We apply such frameworks to a timeseries recommendation task. The goal is to recommend articles to authors on the arXiv.
+
+\subsection*{Back-of-the-envelope comparison of the arXiv dataset to natural language modeling}
+
+In natural language modeling, a standard corpus is the Penn treebank. For timeseries models, vocabulary sizes for this dataset are $10,000$ to $30,000$ words. There are $\sim42,000$ sentences in the training set. Sentences are approximately of length $21$.
+
+For the arXiv dataset, we use a vocabulary of $\sim72,000$ articles, $\sim 28,000$ users, and approximately $50$ articles per user. The larger vocabulary size will lead to longer training times. It is also unclear how the dependencies in the longer timeseries will affect generalization. However, the vocabulary size and length of timeseries are of comparable magnitudes so we expect our method to work.
+
+\subsection*{Validation and test method}
+Rather than hold out a subset of clicks, we validate on entire user timeseries of items and do next-step prediction. A timeseries is held out, and the model sees one step at a time, and generates a ranking of items to predict the next item.
+
+\subsection*{Noise is the issue: why vanilla LSTMs outperform variational autoencoders, and why this comparison is unfair}
+
+We expect vanilla LSTM networks and attention models to outperform our probabilistic variational autoencoder. This is an important issue:  we emphasize that they are qualitatively very different models.
+
+Vanilla LSTM models and attention LSTMs will outperform our models as they mix inference and model. Furthermore, our probabilistic framework adds a Kullback-Leibler regularizer to the cross-entropy loss that is used in standard sequence to sequence models. The reparametrization trick \citep{Kingma2014} injects noise into the latent variables between the inference and generative network. Neural networks are notoriously bad at dealing with noise. Thus many regularization methods such as dropout \citep{Hinton2014} artificially add noise to enable the networks to generalize better at test time.
+
+While attention LSTMs may outperform our models, we argue that they suffer at test time and in terms of interpretability of latent states. Namely, visualizing the hidden states of a trained LSTM shows that the hidden states can all be clustered close togethere in latent space. This leads to issues when using models in practice: they do not generalize. For example, in the Google Inbox (inbox.google.com) auto reply sequence to sequence framework, a lot of hacks are needed to present the user with a diversity of potential replies \citep{Corrado}. This issue would not arise in variational models, as the KL regularization in the ELBO forces the model to use more of its representational capacity and push the latent variables farther apart in latent space.
+
+\subsection*{Dealing with noise: annealing, mirror autoencoders, etc.}
+
+
+
+\bibliographystyle{apa}
+\bibliography{/Users/jaanaltosaar/Dropbox/backups/mendeley_library/library.bib}
+
+\end{document}
