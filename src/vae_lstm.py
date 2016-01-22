@@ -41,7 +41,7 @@ from __future__ import print_function
 
 import time
 
-import sys, os
+import sys, os, shutil
 sys.path.append("/Users/jaanaltosaar/projects/installations/tensorflow")
 
 import tensorflow.python.platform
@@ -74,13 +74,19 @@ flags.DEFINE_string('out_dir', None, "output directory")
 
 FLAGS = flags.FLAGS
 
-if not os.path.exists(FLAGS.out_dir):
-  os.makedirs(FLAGS.out_dir)
+run_dir = os.path.join(FLAGS.out_dir, 'model_{model}'.format(
+            model=FLAGS.model))
+
+if not os.path.exists(run_dir):
+  os.makedirs(run_dir)
+
+shutil.copy('./run.sh', run_dir)
+shutil.copy('./vae_lstm.py', run_dir)
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 # create file handler which logs even debug messages
-fh = logging.FileHandler(FLAGS.out_dir + 'job.log', 'w')
+fh = logging.FileHandler(os.path.join(run_dir, 'job.log'), 'w')
 fh.setLevel(logging.DEBUG)
 logger.addHandler(fh)
 from tensorflow.python.platform import logging
@@ -440,9 +446,9 @@ class VAEModel(object):
     # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
     neg_ELBO = KL_scalar + NLL_scalar# / batch_size
 
-    grads_unclipped_wp = tf.gradients(neg_ELBO, tvars_wp)
-    grads_wp, _ = tf.clip_by_global_norm(grads_unclipped_wp,
-                                      config.max_grad_norm)
+    # grads_unclipped = tf.gradients(neg_ELBO, tvars)
+    # grads, _ = tf.clip_by_global_norm(grads_unclipped,
+    #                                   config.max_grad_norm)
 
     def normalize(tensor):
       return tf.reduce_sum(
@@ -699,7 +705,7 @@ def train(unused_args):
       tf.initialize_all_variables().run()
       logging.info('not using checkpoint file found; initialized vars')
       # initialize summary writer
-      writer = tf.train.SummaryWriter(FLAGS.out_dir, session.graph_def)
+      writer = tf.train.SummaryWriter(run_dir, session.graph_def)
 
     for i in range(config.max_max_epoch):
       lr_decay = config.lr_decay ** max(i - config.max_epoch, 0.0)
@@ -708,7 +714,7 @@ def train(unused_args):
       logging.info("Epoch: %d Learning rate: %.3f" % (i + 1, session.run(m.lr)))
       train_ELBO, train_KL, train_NLL, train_perplexity = run_epoch(session, m, train_data, m.train_op,
         writer=writer, epoch=i+1, verbose=True)
-      save_path = saver.save(session, "{}model.ckpt".format(FLAGS.out_dir))
+      save_path = saver.save(session, os.path.join(run_dir, "model.ckpt"))
       logging.info("Model saved in file: %s" % save_path)
       logging.info("Epoch: %d Train ELBO: %.3f KL: %.3f NLL: %.3f Perplexity: %.3f" % (
         i + 1, train_ELBO, train_KL, train_NLL, train_perplexity))
