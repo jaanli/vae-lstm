@@ -12,7 +12,7 @@ fi
 
 python vae_lstm.py \
   --data_path=$DATA_PATH \
-  --model=medium \
+  --model=small \
   --out_dir=$OUT_DIR \
   --debug=True \
   # --checkpoint_file=/Users/jaanaltosaar/projects/arxiv/fit/2015-12-13-ptb-vae-2/model.ckpt
