@@ -342,8 +342,7 @@ class VAEModel(object):
     # Slightly better results can be obtained with forget gate biases
     # initialized to 1 but the hyperparameters of the model would need to be
     # different than reported in the paper.
-    gpu_id = "/gpu:1"
-    with tf.variable_scope("cell_encoder") and tf.device(gpu_id):
+    with tf.variable_scope("cell_encoder"):
       lstm_encoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
       if is_training and config.keep_prob < 1:
         lstm_encoder_cell = rnn_cell.DropoutWrapper(
@@ -684,7 +683,7 @@ def train(unused_args):
   eval_config.batch_size = 1
   eval_config.num_steps = 1
 
-  with tf.Graph().as_default(), tf.device("/gpu:1"), tf.Session(config=tf.ConfigProto(
+  with tf.Graph().as_default(), tf.Session(config=tf.ConfigProto(
       allow_soft_placement=True, log_device_placement=True)) as session:
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
@@ -737,7 +736,7 @@ def decode():
   vocabulary = len(word_to_id)
 
   config = get_config()
-  with tf.Graph().as_default(), tf.device("/gpu:1"), tf.Session(config=tf.ConfigProto(
+  with tf.Graph().as_default(), tf.Session(config=tf.ConfigProto(
       allow_soft_placement=True, log_device_placement=True)) as session:
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
