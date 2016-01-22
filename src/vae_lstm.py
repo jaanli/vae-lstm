@@ -683,8 +683,7 @@ def train(unused_args):
   eval_config.batch_size = 1
   eval_config.num_steps = 1
 
-  with tf.Graph().as_default(), tf.Session(config=tf.ConfigProto(
-      allow_soft_placement=True, log_device_placement=True)) as session:
+  with tf.Graph().as_default(), tf.Session() as session:
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
     with tf.variable_scope("model", reuse=None, initializer=initializer):
@@ -736,8 +735,7 @@ def decode():
   vocabulary = len(word_to_id)
 
   config = get_config()
-  with tf.Graph().as_default(), tf.Session(config=tf.ConfigProto(
-      allow_soft_placement=True, log_device_placement=True)) as session:
+  with tf.Graph().as_default(), tf.Session() as session:
     initializer = tf.random_uniform_initializer(-config.init_scale,
                                                 config.init_scale)
     with tf.variable_scope("model", reuse=None, initializer=initializer):
