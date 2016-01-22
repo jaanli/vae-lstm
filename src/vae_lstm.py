@@ -550,14 +550,14 @@ class SmallConfig(object):
   learning_rate = 0.9#1.0
   max_grad_norm = 5 #grad clippin
   num_layers = 1
-  num_steps = 25#20
+  num_steps = 20
   hidden_size = 200#100# 2 for debugging
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
   batch_size = 20
-  vocab_size = 10000
+  vocab_size = 72094
   z_dim = 50# 1 for debugging
 
 
@@ -574,7 +574,7 @@ class MediumConfig(object):
   keep_prob = 0.5
   lr_decay = 0.8
   batch_size = 20
-  vocab_size = 10000
+  vocab_size = 72094
   z_dim = 500
 
 
