@@ -2,7 +2,7 @@
 if [[ "$USER" == "jaan" ]];
 then
   OUT_DIR="/home/jaan/projects/vae-lstm/fit/2015-01-22/"
-  DATA_PATH="/home/jaan/projects/vae-lstm/dat/simple-examples/data"
+  DATA_PATH="/home/dliang/data/arxiv/dataset_2012_time_exchangeable"
   PROGRESS="progress_bar=True"
 else
   OUT_DIR=/Users/jaanaltosaar/projects/vae-lstm/fit/2015-01-21/
