@@ -48,17 +48,14 @@ import tensorflow.python.platform
 
 import numpy as np
 import tensorflow as tf
-
 from tensorflow.models.rnn import rnn_cell
 from tensorflow.models.rnn import seq2seq
 #from tensorflow.models.rnn.ptb import reader
 from tensorflow.models.rnn import rnn
 from tensorflow.python.platform import gfile
 import logging
-
 import reader
 
-# set seed
 tf.set_random_seed(98765)
 
 flags = tf.flags
