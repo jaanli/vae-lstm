@@ -6,7 +6,7 @@ then
   PROGRESS="progress_bar=True"
 else
   OUT_DIR=/Users/jaanaltosaar/projects/vae-lstm/fit/2015-01-21/
-  DATA_PATH=/Users/jaanaltosaar/projects/arxiv/dat/simple-examples/data/
+  DATA_PATH=/Users/jaanaltosaar/Dropbox/0projs/vae-lstm/dat/dataset_2012_time_exchangeable
   PROGRESS="progress_bar=True"
 fi
 
