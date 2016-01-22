@@ -356,7 +356,7 @@ class VAEModel(object):
       self._initial_state_encoder = cell_encoder.zero_state(batch_size, tf.float32)
 
 
-    with tf.variable_scope("cell_decoder"):
+    with tf.variable_scope("cell_decoder") and tf.device(gpu_id):
       lstm_decoder_cell = rnn_cell.BasicLSTMCell(size, forget_bias=0.0)
       if is_training and config.keep_prob < 1:
         lstm_decoder_cell = rnn_cell.DropoutWrapper(
@@ -378,71 +378,73 @@ class VAEModel(object):
     # initial inputs
     inputs_encoder = inputs
 
-    outputs_encoder, states_encoder = rnn.rnn(cell_encoder, inputs_encoder, initial_state=self._initial_state_encoder)
+    with tf.device(gpu_id):
+      outputs_encoder, states_encoder = rnn.rnn(
+              cell_encoder, inputs_encoder, initial_state=self._initial_state_encoder)
 
-    # split the outputs to mu and log_sigma
-    mu_and_log_sigmas = [tf.split(1, 2, output_encoder) for output_encoder in outputs_encoder]
-    mus = [mu_and_log_sigma[0] for mu_and_log_sigma in mu_and_log_sigmas]
-    log_sigmas = [mu_and_log_sigma[1] for mu_and_log_sigma in mu_and_log_sigmas]
+      # split the outputs to mu and log_sigma
+      mu_and_log_sigmas = [tf.split(1, 2, output_encoder) for output_encoder in outputs_encoder]
+      mus = [mu_and_log_sigma[0] for mu_and_log_sigma in mu_and_log_sigmas]
+      log_sigmas = [mu_and_log_sigma[1] for mu_and_log_sigma in mu_and_log_sigmas]
 
-    # epsilon is sampled from N(0,1) for location-scale transform
-    epsilons = [tf.random_normal([config.batch_size, config.z_dim], dtype=tf.float32) for i in range(len(log_sigmas))]
+      # epsilon is sampled from N(0,1) for location-scale transform
+      epsilons = [tf.random_normal([config.batch_size, config.z_dim], dtype=tf.float32) for i in range(len(log_sigmas))]
 
-    # do the location-scale transform
-    z_samples = [tf.add(mu, tf.mul(tf.exp(log_sigma), epsilon)) for mu, log_sigma, epsilon in zip(mus, log_sigmas, epsilons)]
-    if decode_only:
-      # if we're decoding, just sample from a random normal
-      z_samples = [tf.random_normal([1, config.z_dim], dtype=tf.float32) for i in range(len(z_samples))]
+      # do the location-scale transform
+      z_samples = [tf.add(mu, tf.mul(tf.exp(log_sigma), epsilon)) for mu, log_sigma, epsilon in zip(mus, log_sigmas, epsilons)]
+      if decode_only:
+        # if we're decoding, just sample from a random normal
+        z_samples = [tf.random_normal([1, config.z_dim], dtype=tf.float32) for i in range(len(z_samples))]
 
-    # calculate KL. equation 10 from kingma - auto-encoding variational bayes.
-    neg_KL_list = [tf.add_n([tf.ones_like(mu), tf.log(tf.square(tf.exp(log_sigma))), tf.neg(tf.square(mu)), tf.neg(tf.square(tf.exp(log_sigma)))]) for mu, log_sigma in zip(mus, log_sigmas)]
+      # calculate KL. equation 10 from kingma - auto-encoding variational bayes.
+      neg_KL_list = [tf.add_n([tf.ones_like(mu), tf.log(tf.square(tf.exp(log_sigma))), tf.neg(tf.square(mu)), tf.neg(tf.square(tf.exp(log_sigma)))]) for mu, log_sigma in zip(mus, log_sigmas)]
 
-    # multiply by 0.5
-    neg_KL_list = [tf.mul(tf.constant(0.5, shape=[1, config.z_dim]), KL_term) for KL_term in neg_KL_list]
+      # multiply by 0.5
+      neg_KL_list = [tf.mul(tf.constant(0.5, shape=[1, config.z_dim]), KL_term) for KL_term in neg_KL_list]
 
-    # merge the list like we merge the outputs
-    neg_KL = tf.reshape(tf.concat(1, neg_KL_list), [-1, config.z_dim])
+      # merge the list like we merge the outputs
+      neg_KL = tf.reshape(tf.concat(1, neg_KL_list), [-1, config.z_dim])
 
-    # no pure decoding opt
-    # outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
+      # no pure decoding opt
+      # outputs_decoder, states_decoder = rnn_decoder(decoder_inputs, self._initial_state_decoder, cell_decoder)
 
-    softmax_w = tf.get_variable("softmax_w", [size, vocab_size])
-    softmax_b = tf.get_variable("softmax_b", [vocab_size])
+      softmax_w = tf.get_variable("softmax_w", [size, vocab_size])
+      softmax_b = tf.get_variable("softmax_b", [vocab_size])
 
-    # concatenate z_samples with previous timesteps
-    # decoder_inputs = [tf.concat(1, [single_input, z_sample]) for single_input, z_sample in zip(inputs_encoder, z_samples)]
-    # outputs_decoder, states_decoder = rnn_decoder_argmax(decoder_inputs, self._initial_state_decoder, cell_decoder, vocab_size,
-    #   output_projection=[softmax_w, softmax_b],
-    #   feed_previous=True,
-    #   config=config)
+      # concatenate z_samples with previous timesteps
+      # decoder_inputs = [tf.concat(1, [single_input, z_sample]) for single_input, z_sample in zip(inputs_encoder, z_samples)]
+      # outputs_decoder, states_decoder = rnn_decoder_argmax(decoder_inputs, self._initial_state_decoder, cell_decoder, vocab_size,
+      #   output_projection=[softmax_w, softmax_b],
+      #   feed_previous=True,
+      #   config=config)
 
-    # refactored to be like sam's
-    outputs_decoder, states_decoder = vae_decoder_argmax(
-      inputs_encoder, z_samples, self._initial_state_decoder, cell_decoder, vocab_size,
-      output_projection=[softmax_w, softmax_b],
-      feed_previous=True,
-      config=config)
+      # refactored to be like sam's
+      outputs_decoder, states_decoder = vae_decoder_argmax(
+        inputs_encoder, z_samples, self._initial_state_decoder, cell_decoder, vocab_size,
+        output_projection=[softmax_w, softmax_b],
+        feed_previous=True,
+        config=config)
 
-    # final output
-    outputs = outputs_decoder
+      # final output
+      outputs = outputs_decoder
 
-    # do a softmax over the vocabulary using the decoder outputs!
-    output = tf.reshape(tf.concat(1, outputs), [-1, size])
-    logits = tf.nn.xw_plus_b(output,
-                             softmax_w,
-                             softmax_b)
+      # do a softmax over the vocabulary using the decoder outputs!
+      output = tf.reshape(tf.concat(1, outputs), [-1, size])
+      logits = tf.nn.xw_plus_b(output,
+                               softmax_w,
+                               softmax_b)
 
-    NLL = seq2seq.sequence_loss_by_example([logits],
-                                            [tf.reshape(self._targets, [-1])],
-                                            [tf.ones([batch_size * num_steps])],
-                                            vocab_size)
+      NLL = seq2seq.sequence_loss_by_example([logits],
+                                              [tf.reshape(self._targets, [-1])],
+                                              [tf.ones([batch_size * num_steps])],
+                                              vocab_size)
 
-    NLL_scalar = tf.reduce_sum(NLL)
-    KL_scalar = tf.neg(tf.reduce_sum(neg_KL))
+      NLL_scalar = tf.reduce_sum(NLL)
+      KL_scalar = tf.neg(tf.reduce_sum(neg_KL))
 
-    # here we compute the *NEGATIVE* ELBO (because we don't know how the optimizer deals with negative learning rates / gradients)
-    # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
-    neg_ELBO = KL_scalar + NLL_scalar# / batch_size
+      # here we compute the *NEGATIVE* ELBO (because we don't know how the optimizer deals with negative learning rates / gradients)
+      # the loss in seq2seq.sequence_loss_by_example is the cross-entropy, which is the *negative* log-likelihood, so we can add it.
+      neg_ELBO = KL_scalar + NLL_scalar# / batch_size
 
     # grads_unclipped = tf.gradients(neg_ELBO, tvars)
     # grads, _ = tf.clip_by_global_norm(grads_unclipped,
@@ -477,9 +479,10 @@ class VAEModel(object):
     tvars = tf.trainable_variables()
     tvar_names = [tvar.name for tvar in tvars]
 
-    grads_unclipped = tf.gradients(neg_ELBO, tvars)
-    grads, _ = tf.clip_by_global_norm(grads_unclipped,
-                                      config.max_grad_norm)
+    with tf.device(gpu_id):
+      grads_unclipped = tf.gradients(neg_ELBO, tvars)
+      grads, _ = tf.clip_by_global_norm(grads_unclipped,
+                                        config.max_grad_norm)
 
     grad_hists = []
     for idx, grad in enumerate(grads_unclipped):
@@ -491,7 +494,8 @@ class VAEModel(object):
     # optimizer = tf.train.GradientDescentOptimizer(self.lr)
     #NB: for adam, need to set epsilon to other than the default 1e-8, otherwise get nans!
     optimizer = tf.train.AdamOptimizer(learning_rate=self.lr, epsilon=1e-1)
-    self._train_op = optimizer.apply_gradients(zip(grads, tvars))
+    with tf.device(gpu_id):
+      self._train_op = optimizer.apply_gradients(zip(grads, tvars))
 
     merged = tf.merge_all_summaries()
     self._merged = merged
