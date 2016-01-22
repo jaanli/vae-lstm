@@ -21,7 +21,7 @@ from tensorflow.python.platform import gfile
 
 def _read_words(filename):
   with gfile.GFile(filename, "r") as f:
-    return f.read().replace("\n", "<eos>").split(' ')
+    return f.read().replace("\n", "<eos>").split()
 
 
 def _build_vocab(filename):
@@ -60,9 +60,9 @@ def ptb_raw_data(data_path=None):
     where each of the data objects can be passed to PTBIterator.
   """
 
-  train_path = os.path.join(data_path, "ptb.train.txt")
-  valid_path = os.path.join(data_path, "ptb.valid.txt")
-  test_path = os.path.join(data_path, "ptb.test.txt")
+  train_path = os.path.join(data_path, "train.txt")
+  valid_path = os.path.join(data_path, "validation.txt")
+  test_path = os.path.join(data_path, "test.txt")
 
   word_to_id = _build_vocab(train_path)
   train_data = _file_to_word_ids(train_path, word_to_id)
