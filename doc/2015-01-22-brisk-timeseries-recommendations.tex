@@ -14,7 +14,7 @@
 
 Inference is expensive, especially in Bayesian timeseries models with long-term dependencies such as factorial hidden markov models. Recently, variational autoencoder methods \citep{Kingma2014} have emerged to enable efficient inference of complex LSTM-based timeseries models \citep{Bowman2015a}.
 
-We apply such frameworks to a timeseries recommendation task. The goal is to recommend articles to authors on the arXiv.
+We apply such frameworks to a timeseries recommendation task. The goal is to recommend articles to authors on the arXiv. We are using Laurent's dataset of user trajectories (or sessions) through arXiv articles.
 
 \subsection*{Back-of-the-envelope comparison of the arXiv dataset to natural language modeling}
 
@@ -35,7 +35,19 @@ While attention LSTMs may outperform our models, we argue that they suffer at te
 
 \subsection*{Dealing with noise: annealing, mirror autoencoders, etc.}
 
+The plan is to test various methods of training probabilistic time series models. We will try annealing methods, mirror autoencoders, and forms of regularization such as dropout.
+
 \subsection*{Incorporating side information}
+
+We will also test incorporating side information. One easy way to add this in is to concatenate the arXiv document embeddings with LDA topic vectors. This would efficiently allow us to capture content-level information in the user preferences as well.
+
+\subsection*{The plan}
+
+We have ensured that we can overfit to this dataset using a vanilla LSTM. We have trained a variational autoencoder LSTM (with latent variables at each timestep), and are exploring the fit using prior checks.
+
+Next, we will run the vanilla word2vec model on the user trajectories to see whether our evaluation plan makes sense (visualizing latent user trajectories in embedding space).
+
+Finally, we will add an attention mechanism to our model, and quantitatively and qualitatively evaluate it against baselines. Our goal is to submit to Recsys.
 
 
 
