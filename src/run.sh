@@ -15,4 +15,4 @@ python vae_lstm.py \
   --model=small \
   --out_dir=$OUT_DIR \
   --debug=True \
-  # --checkpoint_file=/Users/jaanaltosaar/projects/arxiv/fit/2015-12-13-ptb-vae-2/model.ckpt
+  --checkpoint_file=/Users/jaanaltosaar/projects/vae-lstm/fit/model.ckpt

@@ -68,6 +68,7 @@ flags.DEFINE_string("data_path", None, "data path")
 flags.DEFINE_string("checkpoint_file", None, 'checkpoint file to load')
 flags.DEFINE_boolean('debug', False, 'debugging mode or not')
 flags.DEFINE_string('out_dir', None, "output directory")
+flags.DEFINE_boolean('vanilla_LSTM', False, 'whether or not to train a vanilla LSTM')
 
 FLAGS = flags.FLAGS
 
@@ -423,7 +424,8 @@ class VAEModel(object):
       config=config)
 
     # final output
-    outputs = outputs_decoder
+    # change to vanilla lstm
+    outputs = outputs_encoder
 
     # do a softmax over the vocabulary using the decoder outputs!
     output = tf.reshape(tf.concat(1, outputs), [-1, size])
@@ -502,6 +504,11 @@ class VAEModel(object):
   @property
   def input_data(self):
     return self._input_data
+
+  @property
+  def embedding(self):
+      return self._embedding
+
 
   @property
   def merged(self):
