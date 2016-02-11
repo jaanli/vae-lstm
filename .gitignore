@@ -6,6 +6,9 @@
 .idea/vae-lstm.iml
 .idea/workspace.xml
 .ipynb_checkpoints/
+.*.swp
+.*.swo
+*.pyc
 dat/
 doc/.DS_Store
 doc/2015-01-22-brisk-timeseries-recommendations.aux
@@ -17,5 +20,4 @@ doc/2015-01-22-brisk-timeseries-recommendations.log
 doc/2015-01-22-brisk-timeseries-recommendations.out
 doc/2015-01-22-brisk-timeseries-recommendations.synctex.gz
 old/
-src/reader.pyc
 fit/
